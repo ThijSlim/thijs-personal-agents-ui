@@ -1,10 +1,10 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { axe } from "vitest-axe";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Conversation, UiState } from "../../core/types";
 import { approve, deny, markSeen, readConversation, sendReply } from "../../core/ipc";
-import { AgentPanel } from "./AgentPanel";
+import { AgentPanel, POLL_MS } from "./AgentPanel";
 
 vi.mock("../../core/ipc", () => ({
   markSeen: vi.fn().mockResolvedValue(undefined),
@@ -65,8 +65,7 @@ describe("AgentPanel", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Agent needs approval");
     await userEvent.click(approveButton);
     expect(approve).toHaveBeenCalledWith("w1:p1");
-    // One answer per prompt: both buttons wait for the next read.
-    expect(screen.getByRole("button", { name: "Deny" })).toBeDisabled();
+    // The single-answer guard is covered by the stale-read test below.
     second.unmount();
 
     renderPanel(blocked, agent("blocked"));
@@ -142,6 +141,122 @@ describe("AgentPanel", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe("polling while working", () => {
+    const tick = (ms: number) =>
+      act(async () => {
+        vi.advanceTimersByTime(ms);
+      });
+    const setVisibility = (v: DocumentVisibilityState) => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => v });
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: false });
+      setVisibility("visible");
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+      setVisibility("visible");
+    });
+
+    it("polls every POLL_MS while working on the Conversation tab", async () => {
+      expect(POLL_MS).toBe(1500);
+      renderPanel(conv(), agent("working"));
+      expect(readConversation).toHaveBeenCalledTimes(1);
+      await tick(POLL_MS);
+      expect(readConversation).toHaveBeenCalledTimes(2);
+      await tick(POLL_MS);
+      expect(readConversation).toHaveBeenCalledTimes(3);
+    });
+
+    it("does not poll when idle or blocked", async () => {
+      const { rerender } = renderPanel(conv(), agent("idle"));
+      await tick(POLL_MS * 3);
+      expect(readConversation).toHaveBeenCalledTimes(1);
+      rerender(<AgentPanel paneId="w1:p1" state={stateWith(agent("blocked", 2))} />);
+      await tick(POLL_MS * 3);
+      expect(readConversation).toHaveBeenCalledTimes(2); // the status change itself
+    });
+
+    it("stops polling when working stops", async () => {
+      const { rerender } = renderPanel(conv(), agent("working"));
+      await tick(POLL_MS);
+      expect(readConversation).toHaveBeenCalledTimes(2);
+      rerender(<AgentPanel paneId="w1:p1" state={stateWith(agent("idle", 2))} />);
+      await tick(POLL_MS * 3);
+      expect(readConversation).toHaveBeenCalledTimes(3); // the status change itself
+    });
+
+    it("does not poll on the Terminal tab", async () => {
+      renderPanel(conv(), agent("working"));
+      fireEvent.mouseDown(screen.getByRole("tab", { name: "Terminal" }), { button: 0 });
+      expect(screen.getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
+      await tick(POLL_MS * 3);
+      expect(readConversation).toHaveBeenCalledTimes(1);
+      fireEvent.mouseDown(screen.getByRole("tab", { name: "Conversation" }), { button: 0 });
+      await tick(POLL_MS);
+      expect(vi.mocked(readConversation).mock.calls.length).toBeGreaterThan(1);
+    });
+
+    it("does not poll while the window is hidden", async () => {
+      renderPanel(conv(), agent("working"));
+      act(() => setVisibility("hidden"));
+      await tick(POLL_MS * 3);
+      expect(readConversation).toHaveBeenCalledTimes(1);
+      act(() => setVisibility("visible"));
+      await tick(POLL_MS);
+      expect(vi.mocked(readConversation).mock.calls.length).toBeGreaterThan(1);
+    });
+
+    it("stops polling on unmount", async () => {
+      const { unmount } = renderPanel(conv(), agent("working"));
+      await tick(POLL_MS);
+      expect(readConversation).toHaveBeenCalledTimes(2);
+      unmount();
+      await tick(POLL_MS * 3);
+      expect(readConversation).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("a read that started before Approve doesn't re-enable the buttons; the read after it does", async () => {
+    const pending: Array<(c: Conversation) => void> = [];
+    vi.mocked(readConversation).mockImplementation(() => new Promise((r) => pending.push(r)));
+    const { rerender } = render(<AgentPanel paneId="w1:p1" state={stateWith(agent("blocked"))} />);
+    await act(async () => pending.shift()!(blocked));
+    // A state change starts a read that is still in flight when Approve is pressed.
+    rerender(<AgentPanel paneId="w1:p1" state={stateWith(agent("blocked", 2))} />);
+    await waitFor(() => expect(pending).toHaveLength(1));
+    const stale = pending.shift()!;
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(approve).toHaveBeenCalledTimes(1);
+    // The press resolving triggers a fresh read.
+    await waitFor(() => expect(pending).toHaveLength(1));
+    // The stale read (started before the press) must not re-enable the buttons.
+    await act(async () => stale(blocked));
+    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+    // The read started after the press does.
+    await act(async () => pending.shift()!(blocked));
+    expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
+  });
+
+  it("read failures are announced", async () => {
+    vi.mocked(readConversation).mockRejectedValue(new Error("boom"));
+    render(<AgentPanel paneId="w1:p1" state={stateWith(agent("idle"))} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read the conversation: boom");
+  });
+
+  it("text typed while a reply is sending is kept", async () => {
+    let finish!: () => void;
+    vi.mocked(sendReply).mockImplementation(() => new Promise<void>((r) => (finish = r)));
+    renderPanel(conv());
+    await userEvent.type(replyBox(), "first{Enter}");
+    expect(sendReply).toHaveBeenCalledWith("w1:p1", "first");
+    await userEvent.type(replyBox(), " more");
+    await act(async () => finish());
+    expect(replyBox()).toHaveValue(" more");
   });
 
   it("no axe violations", async () => {

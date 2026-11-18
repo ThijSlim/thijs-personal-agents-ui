@@ -7,6 +7,18 @@ import { Conversation } from "./Conversation";
 
 /** Re-read the conversation at most this often while state events stream in. */
 const READ_INTERVAL_MS = 500;
+/** While the agent is working (and the conversation is on screen), re-read this often. */
+export const POLL_MS = 1500;
+
+function useDocumentVisible(): boolean {
+  const [visible, setVisible] = useState(() => document.visibilityState === "visible");
+  useEffect(() => {
+    const update = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+  return visible;
+}
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -32,6 +44,8 @@ export function AgentPanel({ paneId, state }: Props) {
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
   const [answering, setAnswering] = useState(false);
+  const [tab, setTab] = useState("conversation");
+  const visible = useDocumentVisible();
 
   // Header info survives the agent leaving the model (session ended).
   const found = findAgent(state, paneId);
@@ -44,6 +58,9 @@ export function AgentPanel({ paneId, state }: Props) {
   const lastRead = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const seq = useRef(0);
+  // Seq of the last read started before an Approve/Deny press; only reads
+  // after it may re-enable the buttons. `null` when not answering.
+  const answeredAt = useRef<number | null>(null);
 
   const read = () => {
     lastRead.current = Date.now();
@@ -55,7 +72,10 @@ export function AgentPanel({ paneId, state }: Props) {
         // A gone pane has no text left; keep what we last showed.
         setConv((prev) => (c.ended && !c.text && prev ? { ...c, text: prev.text } : c));
         setReadError(null);
-        setAnswering(false);
+        if (answeredAt.current !== null && mine > answeredAt.current) {
+          answeredAt.current = null;
+          setAnswering(false);
+        }
       })
       .catch((e) => {
         if (mine !== seq.current) return;
@@ -77,6 +97,7 @@ export function AgentPanel({ paneId, state }: Props) {
     setActionError(null);
     setReply("");
     setAnswering(false);
+    answeredAt.current = null;
     read();
     return () => {
       clearTimer();
@@ -84,13 +105,8 @@ export function AgentPanel({ paneId, state }: Props) {
     };
   }, [paneId]);
 
-  // Any change to this pane's agent (status, seq, title, gone) re-reads, throttled.
-  const agentKey = JSON.stringify(found?.agent ?? null);
-  const seenKey = useRef({ paneId, agentKey });
-  useEffect(() => {
-    const prev = seenKey.current;
-    seenKey.current = { paneId, agentKey };
-    if (prev.paneId !== paneId || prev.agentKey === agentKey) return;
+  /** Read now, or once READ_INTERVAL_MS has passed since the last read. */
+  const requestRead = () => {
     const wait = lastRead.current + READ_INTERVAL_MS - Date.now();
     if (wait <= 0) {
       clearTimer();
@@ -101,7 +117,25 @@ export function AgentPanel({ paneId, state }: Props) {
         read();
       }, wait);
     }
+  };
+
+  // Any change to this pane's agent (status, seq, title, gone) re-reads, throttled.
+  const agentKey = JSON.stringify(found?.agent ?? null);
+  const seenKey = useRef({ paneId, agentKey });
+  useEffect(() => {
+    const prev = seenKey.current;
+    seenKey.current = { paneId, agentKey };
+    if (prev.paneId !== paneId || prev.agentKey === agentKey) return;
+    requestRead();
   }, [paneId, agentKey]);
+
+  // Show progress: poll while the agent works and its conversation is on screen.
+  const polling = found?.agent.status === "working" && tab === "conversation" && visible;
+  useEffect(() => {
+    if (!polling) return;
+    const id = setInterval(requestRead, POLL_MS);
+    return () => clearInterval(id);
+  }, [paneId, polling]);
 
   const ended = conv?.ended ?? false;
   const permission = conv?.permission ?? null;
@@ -112,8 +146,10 @@ export function AgentPanel({ paneId, state }: Props) {
     setSending(true);
     setActionError(null);
     try {
-      await sendReply(paneId, reply);
-      setReply("");
+      const sent = reply;
+      await sendReply(paneId, sent);
+      // Keep anything typed while the reply was in flight.
+      setReply((cur) => (cur.startsWith(sent) ? cur.slice(sent.length) : cur));
     } catch (e) {
       setActionError(`Couldn't send the reply: ${message(e)}`);
     } finally {
@@ -123,10 +159,13 @@ export function AgentPanel({ paneId, state }: Props) {
 
   const answer = async (fn: (id: string) => Promise<void>, verb: string) => {
     setAnswering(true);
+    answeredAt.current = seq.current;
     setActionError(null);
     try {
       await fn(paneId);
+      read(); // don't wait for a status change that may never come
     } catch (e) {
+      answeredAt.current = null;
       setAnswering(false);
       setActionError(`Couldn't ${verb}: ${message(e)}`);
     }
@@ -144,7 +183,7 @@ export function AgentPanel({ paneId, state }: Props) {
         </div>
       </header>
 
-      <Tabs.Root defaultValue="conversation" className="agent-tabs">
+      <Tabs.Root value={tab} onValueChange={setTab} className="agent-tabs">
         <Tabs.List aria-label="Agent views" className="tab-list">
           <Tabs.Trigger value="conversation" className="tab">
             Conversation
@@ -156,7 +195,11 @@ export function AgentPanel({ paneId, state }: Props) {
 
         <Tabs.Content value="conversation" className="tab-panel conversation-panel">
           {ended && <p className="notice">Session ended</p>}
-          {readError && <p className="error">{readError}</p>}
+          {readError && (
+            <p role="alert" className="error">
+              {readError}
+            </p>
+          )}
           <Conversation text={conv?.text ?? ""} />
 
           {permission && (
