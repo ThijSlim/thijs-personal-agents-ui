@@ -12,7 +12,21 @@ vi.mock("../../core/ipc", () => ({
   sendReply: vi.fn().mockResolvedValue(undefined),
   approve: vi.fn().mockResolvedValue(undefined),
   deny: vi.fn().mockResolvedValue(undefined),
+  readScreen: vi.fn().mockResolvedValue({ text: "", ended: false }),
+  sendInput: vi.fn().mockResolvedValue(undefined),
 }));
+// jsdom has no canvas/matchMedia, which xterm needs.
+vi.mock("@xterm/xterm", () => ({
+  Terminal: class {
+    open = vi.fn();
+    resize = vi.fn();
+    write = vi.fn();
+    attachCustomKeyEventHandler = vi.fn();
+    onData = () => ({ dispose() {} });
+    dispose = vi.fn();
+  },
+}));
+vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
 const agent = (status: Agent["status"], seq = 1): Agent => ({
   paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", agent: "claude", title: "fix bug", status, stateChangeSeq: seq,
@@ -257,6 +271,14 @@ describe("AgentPanel", () => {
     await userEvent.type(replyBox(), " more");
     await act(async () => finish());
     expect(replyBox()).toHaveValue(" more");
+  });
+
+  it("no axe violations with the Terminal tab active", async () => {
+    const { container } = renderPanel(conv());
+    await screen.findByRole("log");
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Terminal" }), { button: 0 });
+    expect(await screen.findByRole("group", { name: "Terminal for fix bug" })).toBeInTheDocument();
+    expect(await axe(container)).toHaveNoViolations();
   });
 
   it("no axe violations", async () => {

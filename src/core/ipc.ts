@@ -66,3 +66,18 @@ export function useUiState(): UiState {
   }, []);
   return state;
 }
+
+export interface Screen {
+  text: string;
+  ended: boolean;
+}
+
+/** The pane's visible screen, ANSI-styled. */
+export function readScreen(paneId: string): Promise<Screen> {
+  return invoke<Screen>("read_screen", { paneId });
+}
+
+/** Forward typed `text` and/or herdr key-combo strings to the pane. */
+export function sendInput(paneId: string, input: { text?: string; keys?: string[] }): Promise<void> {
+  return invoke("send_input", { paneId, text: input.text ?? null, keys: input.keys ?? null });
+}

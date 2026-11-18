@@ -1,5 +1,6 @@
 //! Tauri commands exposed to the UI.
 
+use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Runtime, State};
 use tokio::sync::Mutex;
@@ -78,6 +79,60 @@ pub async fn approve(state: State<'_, Mutex<AppState>>, pane_id: String) -> Resu
 pub async fn deny(state: State<'_, Mutex<AppState>>, pane_id: String) -> Result<(), String> {
     let client = client(&state).await?;
     press(&client, &pane_id, DENY_KEYS).await.map_err(|e| format!("couldn't deny: {e}"))
+}
+
+/// The pane's visible screen, ANSI-styled, for the Terminal tab.
+#[tauri::command]
+pub async fn read_screen(state: State<'_, Mutex<AppState>>, pane_id: String) -> Result<Screen, String> {
+    let client = client(&state).await?;
+    screen(&client, &pane_id).await
+}
+
+/// Forward typed `text` and/or herdr key-combo strings `keys` to the pane.
+#[tauri::command]
+pub async fn send_input(
+    state: State<'_, Mutex<AppState>>,
+    pane_id: String,
+    text: Option<String>,
+    keys: Option<Vec<String>>,
+) -> Result<(), String> {
+    let client = client(&state).await?;
+    input(&client, &pane_id, text, keys).await
+}
+
+/// The pane's visible screen. `ended` when herdr no longer knows the pane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Screen {
+    pub text: String,
+    pub ended: bool,
+}
+
+/// Read `pane_id`'s visible screen with its ANSI styling (`format: ansi`,
+/// `strip_ansi: false`) so the terminal view can render colours.
+pub async fn screen(client: &HerdrClient, pane_id: &str) -> Result<Screen, String> {
+    let params = json!({ "pane_id": pane_id, "source": "visible", "format": "ansi", "strip_ansi": false });
+    match read_text(client, params).await {
+        Ok(text) => Ok(Screen { text, ended: false }),
+        Err(HerdrError::Api { code, .. }) if is_not_found(&code) => Ok(Screen { text: String::new(), ended: true }),
+        Err(e) => Err(format!("couldn't read the terminal: {e}")),
+    }
+}
+
+/// Send text and/or key combos to the pane via `pane.send_input`.
+pub async fn input(
+    client: &HerdrClient,
+    pane_id: &str,
+    text: Option<String>,
+    keys: Option<Vec<String>>,
+) -> Result<(), String> {
+    let mut params = json!({ "pane_id": pane_id });
+    if let Some(text) = text {
+        params["text"] = json!(text);
+    }
+    if let Some(keys) = keys {
+        params["keys"] = json!(keys);
+    }
+    client.call("pane.send_input", params).await.map(|_| ()).map_err(|e| format!("couldn't send input: {e}"))
 }
 
 /// How much recent output the conversation view shows.

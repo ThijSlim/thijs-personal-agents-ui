@@ -4,6 +4,7 @@ import { approve, deny, markSeen, readConversation, sendReply } from "../../core
 import { StateDot } from "../../core/StateDot";
 import type { Agent, Conversation as ConversationData, UiState } from "../../core/types";
 import { Conversation } from "./Conversation";
+import { TerminalView } from "./TerminalView";
 
 /** Re-read the conversation at most this often while state events stream in. */
 const READ_INTERVAL_MS = 500;
@@ -260,7 +261,7 @@ export function AgentPanel({ paneId, state }: Props) {
         </Tabs.Content>
 
         <Tabs.Content value="terminal" className="tab-panel">
-          <h2>Terminal</h2>
+          <TerminalView paneId={paneId} label={info?.agent.title?.trim() || paneId} active={tab === "terminal" && visible} ended={ended} />
         </Tabs.Content>
       </Tabs.Root>
 
