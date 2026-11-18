@@ -22,9 +22,15 @@ fn greet(name: &str) -> String {
 
 fn show_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
+        if let Err(e) = w.unminimize() {
+            log::warn!("unminimize main window failed: {e}");
+        }
+        if let Err(e) = w.show() {
+            log::warn!("show main window failed: {e}");
+        }
+        if let Err(e) = w.set_focus() {
+            log::warn!("focus main window failed: {e}");
+        }
     }
 }
 
@@ -93,8 +99,13 @@ pub fn run() {
                     .notification()
                     .and_then(|n| n.extra().get(PANE_ID_KEY))
                     .and_then(|v| v.as_str());
-                if let Some(pane_id) = pane_id {
-                    let _ = handle.emit("select-agent", pane_id);
+                match pane_id {
+                    Some(pane_id) => {
+                        if let Err(e) = handle.emit("select-agent", pane_id) {
+                            log::warn!("emit select-agent failed: {e}");
+                        }
+                    }
+                    None => log::debug!("notification click without {PANE_ID_KEY} in extra"),
                 }
             })?;
             let (tx, rx) = mpsc::channel(64);
@@ -107,7 +118,9 @@ pub fn run() {
                 && window.label() == MAIN_WINDOW
             {
                 api.prevent_close();
-                let _ = window.hide();
+                if let Err(e) = window.hide() {
+                    log::warn!("hide main window failed: {e}");
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![greet])
