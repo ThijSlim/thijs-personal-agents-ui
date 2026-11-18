@@ -15,19 +15,26 @@ const agentName = (a: Pick<Agent, "title">) => a.title?.trim() || "Agent";
 export function Sidebar({ state, selection, onSelect }: Props) {
   const headingId = useId();
   const [announcement, setAnnouncement] = useState("");
-  const pending = useRef<{ id: string; label: string } | null>(null);
+  const pending = useRef<{ id: string; label: string; target: number } | null>(null);
+  const flip = useRef(false);
   const dragId = useRef<string | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
-  // Announce a keyboard move only once herdr's state update has arrived.
+  // A trailing nbsp that alternates makes an identical message re-announce.
+  const announce = (msg: string) => {
+    flip.current = !flip.current;
+    setAnnouncement(flip.current ? msg : `${msg}\u00a0`);
+  };
+
+  // Announce a keyboard move only once herdr reports the Space at its target.
   useEffect(() => {
     const p = pending.current;
     if (!p) return;
     const index = state.spaces.findIndex((s) => s.id === p.id);
-    if (index < 0) return;
+    if (index !== p.target) return;
     pending.current = null;
-    setAnnouncement(`Moved ${p.label} to position ${index + 1} of ${state.spaces.length}`);
+    announce(`Moved ${p.label} to position ${index + 1} of ${state.spaces.length}`);
     listRef.current?.querySelector<HTMLElement>(`[data-space-id="${CSS.escape(p.id)}"] .space-button`)?.focus();
   }, [state.spaces]);
 
@@ -36,10 +43,11 @@ export function Sidebar({ state, selection, onSelect }: Props) {
     markSeen(paneId).catch((e) => console.error("mark_seen failed", e));
   };
 
-  const move = (id: string, index: number) =>
+  const move = (id: string, index: number, label: string) =>
     moveSpace(id, index).catch((e) => {
       pending.current = null;
       console.error("move_space failed", e);
+      announce(`Couldn't move ${label}: ${e instanceof Error ? e.message : String(e)}`);
     });
 
   const onKeyDown = (e: React.KeyboardEvent, index: number) => {
@@ -48,8 +56,8 @@ export function Sidebar({ state, selection, onSelect }: Props) {
     const target = index + (e.key === "ArrowUp" ? -1 : 1);
     if (target < 0 || target >= state.spaces.length) return;
     const space = state.spaces[index];
-    pending.current = { id: space.id, label: space.label };
-    move(space.id, target);
+    pending.current = { id: space.id, label: space.label, target };
+    move(space.id, target, space.label);
   };
 
   const isSelected = (id: string) => selection?.module === "agents" && selection.id === id;
@@ -59,10 +67,7 @@ export function Sidebar({ state, selection, onSelect }: Props) {
       {state.connection === "notRunning" && (
         <div className="banner">
           <p>
-            <strong>herdr isn't running</strong>
-          </p>
-          <p>
-            Run <code>herdr</code> in a terminal.
+            <strong>herdr isn't running</strong> <code>herdr</code>
           </p>
           <p className="muted">Start it in a terminal, then this app reconnects automatically.</p>
         </div>
@@ -108,7 +113,7 @@ export function Sidebar({ state, selection, onSelect }: Props) {
                   const id = dragId.current;
                   dragId.current = null;
                   setDragOver(null);
-                  if (id && id !== space.id) move(id, i);
+                  if (id && id !== space.id) move(id, i, state.spaces.find((s) => s.id === id)?.label ?? "space");
                 }}
                 onDragEnd={() => {
                   dragId.current = null;
@@ -118,9 +123,7 @@ export function Sidebar({ state, selection, onSelect }: Props) {
                 <button
                   type="button"
                   className="space-button"
-                  aria-current={isSelected(space.id) ? "true" : undefined}
                   aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-                  onClick={() => onSelect({ module: "agents", id: space.id })}
                   onKeyDown={(e) => onKeyDown(e, i)}
                 >
                   {space.label}

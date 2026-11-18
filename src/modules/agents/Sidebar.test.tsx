@@ -28,6 +28,8 @@ const connected: UiState = {
 };
 const spaceItems = () =>
   Array.from(screen.getByRole("list", { name: "Spaces" }).querySelectorAll<HTMLElement>(":scope > li"));
+const spaceButton = (name: string) =>
+  within(screen.getByRole("list", { name: "Spaces" })).getByRole("button", { name });
 const notRunning: UiState = { connection: "notRunning", spaces: [], needsYou: [] };
 
 beforeEach(() => vi.clearAllMocks());
@@ -77,6 +79,53 @@ describe("Sidebar", () => {
     expect(status).toHaveTextContent("Moved alpha to position 2 of 2");
   });
 
+  it("does not announce for unrelated state changes while a move is pending", async () => {
+    const mk = (spaces: UiState["spaces"]): UiState => ({ ...connected, spaces });
+    const props = { selection: null, onSelect: () => {} };
+    const { rerender } = render(<Sidebar state={connected} {...props} />);
+    spaceButton("alpha").focus();
+    await userEvent.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    const status = screen.getByRole("status");
+    const changed = [
+      { ...connected.spaces[0], agents: [agent("w1:p1", "w1", "working", "fix bug")] },
+      connected.spaces[1],
+    ];
+    rerender(<Sidebar state={mk(changed)} {...props} />);
+    expect(status).toHaveTextContent("");
+    rerender(<Sidebar state={mk([changed[1], changed[0]])} {...props} />);
+    expect(status).toHaveTextContent("Moved alpha to position 2 of 2");
+    expect(spaceButton("alpha")).toHaveFocus();
+  });
+
+  it("announces a failed move", async () => {
+    vi.mocked(moveSpace).mockRejectedValueOnce("herdr isn't running");
+    render(<Sidebar state={connected} selection={null} onSelect={() => {}} />);
+    spaceButton("alpha").focus();
+    await userEvent.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    expect(await screen.findByText("Couldn't move alpha: herdr isn't running")).toBeInTheDocument();
+  });
+
+  it("re-announces identical messages", async () => {
+    vi.mocked(moveSpace).mockRejectedValue("boom");
+    render(<Sidebar state={connected} selection={null} onSelect={() => {}} />);
+    const status = screen.getByRole("status");
+    spaceButton("alpha").focus();
+    await userEvent.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await screen.findByText("Couldn't move alpha: boom");
+    const first = status.textContent;
+    await userEvent.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await vi.waitFor(() => expect(status.textContent).not.toBe(first));
+    expect(status).toHaveTextContent("Couldn't move alpha: boom");
+    vi.mocked(moveSpace).mockResolvedValue(undefined);
+  });
+
+  it("clicking a space selects nothing", async () => {
+    const onSelect = vi.fn();
+    render(<Sidebar state={connected} selection={null} onSelect={onSelect} />);
+    await userEvent.click(spaceButton("alpha"));
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
   it("drag and drop reorders", () => {
     render(<Sidebar state={connected} selection={null} onSelect={() => {}} />);
     const items = spaceItems();
@@ -91,6 +140,7 @@ describe("Sidebar", () => {
     render(<Sidebar state={notRunning} selection={null} onSelect={() => {}} />);
     expect(screen.getByText(/herdr isn't running/)).toBeInTheDocument();
     expect(screen.getByText("herdr", { selector: "code" })).toBeInTheDocument();
+    expect(screen.queryByText(/Run /)).not.toBeInTheDocument();
     expect(screen.getByText(/this app reconnects automatically/)).toBeInTheDocument();
   });
 
