@@ -228,6 +228,7 @@ impl SessionModel {
                 a.pane_id = new_id.clone();
                 a.workspace_id = ws;
                 a.tab_id = tab;
+                let old = a.status;
                 if pane.get("agent_status").is_some() {
                     a.status = status(pane);
                 }
@@ -235,7 +236,7 @@ impl SessionModel {
                 self.agents.insert(new_id.clone(), a);
                 vec![
                     ModelChange::AgentRemoved { pane_id: prev },
-                    ModelChange::AgentStatus { pane_id: new_id, old: None, new },
+                    ModelChange::AgentStatus { pane_id: new_id, old: Some(old), new },
                 ]
             }
             "pane_closed" | "pane_exited" => {
@@ -422,7 +423,11 @@ mod tests {
         let changes = m.apply_event(&ev);
         assert_eq!(changes, vec![
             ModelChange::AgentRemoved { pane_id: "w1:p1".into() },
-            ModelChange::AgentStatus { pane_id: "w2:p4".into(), old: None, new: AgentStatus::Blocked },
+            ModelChange::AgentStatus {
+                pane_id: "w2:p4".into(),
+                old: Some(AgentStatus::Blocked),
+                new: AgentStatus::Blocked
+            },
         ]);
         assert!(!m.agents.contains_key("w1:p1"));
         let a = &m.agents["w2:p4"];
