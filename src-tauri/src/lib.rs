@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod commands;
 pub mod herdr;
 pub mod state;
 
@@ -13,12 +14,6 @@ use state::{AppState, Notice, UiState, badge_count};
 const MAIN_WINDOW: &str = "main";
 /// Key in a notification's `extra` payload holding the agent's pane id.
 const PANE_ID_KEY: &str = "paneId";
-
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
 
 fn show_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
@@ -84,7 +79,18 @@ async fn consume<R: Runtime>(app: AppHandle<R>, mut rx: mpsc::Receiver<SessionUp
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let level = if cfg!(debug_assertions) { log::LevelFilter::Debug } else { log::LevelFilter::Info };
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(level)
+                .clear_targets()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),
+                ])
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(AppState::default()))
@@ -123,7 +129,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![commands::get_state, commands::mark_seen, commands::move_space])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
