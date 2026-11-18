@@ -16,6 +16,7 @@ vi.mock("./core/ipc", () => ({
   onSelectAgent: vi.fn().mockResolvedValue(() => {}),
   markSeen: vi.fn().mockResolvedValue(undefined),
   moveSpace: vi.fn().mockResolvedValue(undefined),
+  readConversation: vi.fn().mockResolvedValue({ text: "", permission: null, ended: false }),
 }));
 
 describe("App", () => {
@@ -29,6 +30,8 @@ describe("App", () => {
     render(<App />);
     const cb = vi.mocked(ipc.onSelectAgent).mock.calls[0][0];
     act(() => cb("w1:p9"));
-    expect(await screen.findByText("Selected: w1:p9")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Conversation" })).toBeInTheDocument();
+    expect(ipc.markSeen).toHaveBeenCalledWith("w1:p9");
+    expect(ipc.readConversation).toHaveBeenCalledWith("w1:p9");
   });
 });

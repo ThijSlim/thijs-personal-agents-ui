@@ -29,3 +29,13 @@ export type UiState = {
   spaces: SpaceView[];
   needsYou: NeedsYouItem[];
 };
+
+export interface PermissionPrompt {
+  question: string;
+}
+
+export interface Conversation {
+  text: string;
+  permission: PermissionPrompt | null;
+  ended: boolean;
+}

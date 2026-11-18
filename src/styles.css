@@ -105,6 +105,47 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0
 
 .muted { color: var(--fg-muted); padding: 0 8px; }
 
+.agent-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.agent-header { margin-bottom: 12px; }
+.agent-space { margin: 0 0 2px; font-size: 12px; color: var(--fg-muted); }
+.agent-title { display: flex; align-items: center; gap: 12px; }
+.agent-title h1 { margin: 0; font-size: 20px; font-weight: 600; }
+
+.agent-tabs { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.tab-list { display: flex; gap: 4px; border-bottom: 1px solid var(--selected); margin-bottom: 12px; }
+.tab { padding: 6px 12px; border-radius: 8px 8px 0 0; color: var(--fg-muted); }
+.tab[data-state="active"] { color: var(--fg); box-shadow: inset 0 -2px 0 var(--focus); }
+.tab-panel { flex: 1; min-height: 0; }
+.tab-panel h2 { margin: 0; }
+.conversation-panel { display: flex; flex-direction: column; gap: 12px; }
+
+.conversation {
+  flex: 1; min-height: 120px; margin: 0; padding: 12px; overflow: auto;
+  border-radius: 8px; background: var(--bg-side);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.45;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+.permission { padding: 12px; border-radius: 8px; background: var(--banner-bg); color: var(--banner-fg); }
+.permission-question { margin: 0 0 10px; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.permission-actions { display: flex; gap: 8px; }
+
+.button { padding: 6px 14px; border: 1px solid var(--fg-muted); text-align: center; }
+.button.primary { background: var(--focus); border-color: var(--focus); color: #fff; }
+.button.primary:hover { filter: brightness(1.08); background: var(--focus); }
+.button:disabled { opacity: 0.5; cursor: default; }
+
+.reply { display: grid; grid-template-columns: 1fr auto; gap: 6px 8px; align-items: end; }
+.reply label { grid-column: 1 / -1; font-weight: 600; }
+.reply textarea {
+  font: inherit; color: inherit; background: var(--bg); resize: vertical;
+  padding: 8px; border: 1px solid var(--fg-muted); border-radius: 8px;
+}
+.reply textarea:disabled { opacity: 0.6; }
+
+.notice { margin: 0; padding: 8px 12px; border-radius: 8px; background: var(--selected); font-weight: 600; }
+.error { margin: 0; color: var(--c-blocked); }
+
 .sr-only {
   position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;

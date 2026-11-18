@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { UiState } from "./types";
+import type { Conversation, UiState } from "./types";
 
 export function getState(): Promise<UiState> {
   return invoke<UiState>("get_state");
@@ -17,6 +17,23 @@ export function markSeen(paneId: string): Promise<void> {
 
 export function moveSpace(id: string, index: number): Promise<void> {
   return invoke("move_space", { workspaceId: id, insertIndex: index });
+}
+
+export function readConversation(paneId: string): Promise<Conversation> {
+  return invoke<Conversation>("read_conversation", { paneId });
+}
+
+/** Send `text` to the agent exactly as typed (the core rejects blank text). */
+export function sendReply(paneId: string, text: string): Promise<void> {
+  return invoke("send_reply", { paneId, text });
+}
+
+export function approve(paneId: string): Promise<void> {
+  return invoke("approve", { paneId });
+}
+
+export function deny(paneId: string): Promise<void> {
+  return invoke("deny", { paneId });
 }
 
 export function onSelectAgent(cb: (paneId: string) => void): Promise<UnlistenFn> {

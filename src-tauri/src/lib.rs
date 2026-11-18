@@ -129,7 +129,15 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![commands::get_state, commands::mark_seen, commands::move_space])
+        .invoke_handler(tauri::generate_handler![
+            commands::get_state,
+            commands::mark_seen,
+            commands::move_space,
+            commands::read_conversation,
+            commands::send_reply,
+            commands::approve,
+            commands::deny,
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
