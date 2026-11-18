@@ -18,10 +18,13 @@ notifies you when one needs you. It talks to a running herdr server.
    reconnects by itself once it is.
 2. Start the app (`pnpm tauri dev`, or open the built `.app`).
 
-- The sidebar lists Spaces and their agents in herdr's order. Agents that are
-  blocked and waiting on you also appear under "Needs you", and the Dock badge
-  counts them. A notification fires when an agent becomes blocked; clicking it
-  opens that agent.
+- The sidebar lists Spaces and their agents in herdr's order. "Needs you"
+  lists agents that are blocked and waiting on you, then agents that finished
+  (done) since you last looked at them. The Dock badge counts the blocked ones
+  only. A notification fires when an agent becomes blocked; clicking it opens
+  that agent.
+- While an agent shows a permission prompt, answer it with Approve or Deny
+  before sending a reply.
 - Select an agent to see its conversation. Type a reply and send it, or use
   Approve / Deny when it asks for permission. In the sidebar, Alt+Up / Alt+Down moves the focused Space up or down; you can
   also drag Spaces to reorder them. The order is mirrored in herdr.
