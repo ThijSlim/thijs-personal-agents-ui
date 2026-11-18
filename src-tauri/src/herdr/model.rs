@@ -120,15 +120,17 @@ impl SessionModel {
                 if let Some(a) = self.agents.get_mut(&pane_id) {
                     let old = a.status;
                     a.status = new;
-                    if s(d, "agent").is_some() {
+                    // Explicit null clears; absent key keeps the stored value.
+                    if d.get("agent").is_some() {
                         a.agent = s(d, "agent");
                     }
-                    if s(d, "title").is_some() {
+                    if d.get("title").is_some() {
                         a.title = s(d, "title");
                     }
                     if old == new {
                         return vec![];
                     }
+                    a.state_change_seq += 1;
                     vec![ModelChange::AgentStatus { pane_id, old: Some(old), new }]
                 } else if s(d, "agent").is_some() {
                     // Agent first seen via event (not in snapshot): tab id is unknown.
@@ -139,7 +141,7 @@ impl SessionModel {
                         agent: s(d, "agent"),
                         title: s(d, "title"),
                         status: new,
-                        state_change_seq: 0,
+                        state_change_seq: 1,
                     };
                     self.agents.insert(pane_id.clone(), agent);
                     vec![ModelChange::AgentStatus { pane_id, old: None, new }]
@@ -199,7 +201,44 @@ impl SessionModel {
                 }
                 changes
             }
-            "pane_closed" => {
+            "tab_closed" => {
+                let (Some(tab_id), Some(ws)) = (s(d, "tab_id"), s(d, "workspace_id")) else { return vec![] };
+                let gone: Vec<String> = self
+                    .agents
+                    .values()
+                    .filter(|a| a.workspace_id == ws && a.tab_id == tab_id)
+                    .map(|a| a.pane_id.clone())
+                    .collect();
+                gone.into_iter()
+                    .map(|pane_id| {
+                        self.agents.remove(&pane_id);
+                        ModelChange::AgentRemoved { pane_id }
+                    })
+                    .collect()
+            }
+            "pane_moved" => {
+                let (Some(prev), Some(pane)) = (s(d, "previous_pane_id"), d.get("pane")) else { return vec![] };
+                let Some(mut a) = self.agents.remove(&prev) else { return vec![] };
+                let (Some(new_id), Some(ws), Some(tab)) =
+                    (s(pane, "pane_id"), s(pane, "workspace_id"), s(pane, "tab_id"))
+                else {
+                    self.agents.insert(prev, a);
+                    return vec![];
+                };
+                a.pane_id = new_id.clone();
+                a.workspace_id = ws;
+                a.tab_id = tab;
+                if pane.get("agent_status").is_some() {
+                    a.status = status(pane);
+                }
+                let new = a.status;
+                self.agents.insert(new_id.clone(), a);
+                vec![
+                    ModelChange::AgentRemoved { pane_id: prev },
+                    ModelChange::AgentStatus { pane_id: new_id, old: None, new },
+                ]
+            }
+            "pane_closed" | "pane_exited" => {
                 let Some(pane_id) = s(d, "pane_id") else { return vec![] };
                 if self.agents.remove(&pane_id).is_some() {
                     vec![ModelChange::AgentRemoved { pane_id }]
@@ -359,6 +398,76 @@ mod tests {
         }
         assert!(m.spaces.iter().all(|s| s.id != "w4"));
         assert!(m.apply_event(&event("pane_created", json!({}))).is_empty());
+    }
+
+    #[test]
+    fn tab_closed_removes_agents_in_that_tab() {
+        let mut m = snapshot_model();
+        let other = m.agents["w1:p1"].tab_id.clone();
+        let mut b = agent("w1:p9", "w1", AgentStatus::Idle);
+        b.tab_id = "w1:t2".into();
+        m.agents.insert("w1:p9".into(), b);
+        let changes = m.apply_event(&event("tab_closed", json!({"type":"tab_closed","tab_id":"w1:t2","workspace_id":"w1"})));
+        assert_eq!(changes, vec![ModelChange::AgentRemoved { pane_id: "w1:p9".into() }]);
+        assert_eq!(m.agents["w1:p1"].tab_id, other);
+    }
+
+    #[test]
+    fn pane_moved_rekeys_agent() {
+        let mut m = snapshot_model();
+        let ev = event("pane_moved", json!({
+            "type":"pane_moved","previous_pane_id":"w1:p1","previous_workspace_id":"w1","previous_tab_id":"w1:t1",
+            "pane":{"pane_id":"w2:p4","workspace_id":"w2","tab_id":"w2:t3","agent_status":"blocked"}
+        }));
+        let changes = m.apply_event(&ev);
+        assert_eq!(changes, vec![
+            ModelChange::AgentRemoved { pane_id: "w1:p1".into() },
+            ModelChange::AgentStatus { pane_id: "w2:p4".into(), old: None, new: AgentStatus::Blocked },
+        ]);
+        assert!(!m.agents.contains_key("w1:p1"));
+        let a = &m.agents["w2:p4"];
+        assert_eq!((a.pane_id.as_str(), a.workspace_id.as_str(), a.tab_id.as_str()), ("w2:p4", "w2", "w2:t3"));
+        // no agent under previous id: no-op
+        let ev2 = event("pane_moved", json!({"previous_pane_id":"w7:p1","pane":{"pane_id":"w8:p1","workspace_id":"w8","tab_id":"w8:t1"}}));
+        assert!(m.apply_event(&ev2).is_empty());
+    }
+
+    #[test]
+    fn pane_exited_removes_agent() {
+        let mut m = snapshot_model();
+        let changes = m.apply_event(&event("pane_exited", json!({"type":"pane_exited","pane_id":"w1:p1","workspace_id":"w1"})));
+        assert_eq!(changes, vec![ModelChange::AgentRemoved { pane_id: "w1:p1".into() }]);
+        assert!(m.agents.is_empty());
+    }
+
+    #[test]
+    fn status_changes_bump_state_change_seq() {
+        let mut m = snapshot_model();
+        let base = m.agents["w1:p1"].state_change_seq;
+        let st = |s: &str| event("pane.agent_status_changed", json!({"pane_id":"w1:p1","workspace_id":"w1","agent_status":s}));
+        m.apply_event(&st("working"));
+        let s1 = m.agents["w1:p1"].state_change_seq;
+        m.apply_event(&st("idle"));
+        let s2 = m.agents["w1:p1"].state_change_seq;
+        assert!(base < s1 && s1 < s2);
+        // unchanged status does not bump
+        m.apply_event(&st("idle"));
+        assert_eq!(m.agents["w1:p1"].state_change_seq, s2);
+        // new agent starts at 1
+        m.apply_event(&event("pane.agent_status_changed", json!({"pane_id":"w1:p5","workspace_id":"w1","agent":"claude","agent_status":"idle"})));
+        assert_eq!(m.agents["w1:p5"].state_change_seq, 1);
+    }
+
+    #[test]
+    fn null_agent_and_title_clear_absent_keeps() {
+        let mut m = snapshot_model();
+        m.agents.get_mut("w1:p1").unwrap().title = Some("t".into());
+        m.apply_event(&event("pane.agent_status_changed", json!({"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle"})));
+        assert_eq!(m.agents["w1:p1"].agent.as_deref(), Some("claude"));
+        assert_eq!(m.agents["w1:p1"].title.as_deref(), Some("t"));
+        m.apply_event(&event("pane.agent_status_changed", json!({"pane_id":"w1:p1","workspace_id":"w1","agent_status":"working","agent":null,"title":null})));
+        assert_eq!(m.agents["w1:p1"].agent, None);
+        assert_eq!(m.agents["w1:p1"].title, None);
     }
 
     #[test]
