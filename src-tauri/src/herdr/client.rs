@@ -110,6 +110,12 @@ impl HerdrClient {
         Ok(Self { path: Arc::new(path.to_path_buf()), next_id: Arc::new(AtomicU64::new(1)), timeout })
     }
 
+    /// A client for `path` without probing it (tests that only store one).
+    #[cfg(test)]
+    pub(crate) fn unconnected(path: &Path) -> Self {
+        Self { path: Arc::new(path.to_path_buf()), next_id: Arc::new(AtomicU64::new(1)), timeout: DEFAULT_TIMEOUT }
+    }
+
     pub async fn call(&self, method: &str, params: Value) -> Result<Value, HerdrError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
         let req = Request { id, method: method.into(), params };
