@@ -1,0 +1,29 @@
+name: thijs-personal-agents-ui
+version: 1.0.0
+description: APM project for thijs-personal-agents-ui
+author: Thijs Limmen
+# Which agent platforms to deploy to.
+# Resolution order: --target flag > this field > auto-detect from filesystem.
+# Accepted values: agent-skills, antigravity, claude, codex, copilot, cursor, gemini, grok-bot, grok-build, hermes, kiro, opencode, vscode, windsurf
+targets:
+  - copilot
+dependencies:
+  apm:
+    - obra/superpowers/skills/brainstorming
+    - obra/superpowers/skills/diagnosing-superpowers
+    - obra/superpowers/skills/dispatching-parallel-agents
+    - obra/superpowers/skills/executing-plans
+    - obra/superpowers/skills/finishing-a-development-branch
+    - obra/superpowers/skills/receiving-code-review
+    - obra/superpowers/skills/requesting-code-review
+    - obra/superpowers/skills/subagent-driven-development
+    - obra/superpowers/skills/systematic-debugging
+    - obra/superpowers/skills/test-driven-development
+    - obra/superpowers/skills/using-git-worktrees
+    - obra/superpowers/skills/using-superpowers
+    - obra/superpowers/skills/verification-before-completion
+    - obra/superpowers/skills/writing-plans
+    - obra/superpowers/skills/writing-skills
+  mcp: []
+includes: auto
+scripts: {}
