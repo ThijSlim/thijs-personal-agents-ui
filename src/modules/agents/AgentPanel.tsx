@@ -47,6 +47,7 @@ export function AgentPanel({ paneId, state }: Props) {
   const [answering, setAnswering] = useState(false);
   const [tab, setTab] = useState("conversation");
   const visible = useDocumentVisible();
+  const terminalTab = useRef<HTMLButtonElement>(null);
 
   // Header info survives the agent leaving the model (session ended).
   const found = findAgent(state, paneId);
@@ -189,7 +190,7 @@ export function AgentPanel({ paneId, state }: Props) {
           <Tabs.Trigger value="conversation" className="tab">
             Conversation
           </Tabs.Trigger>
-          <Tabs.Trigger value="terminal" className="tab">
+          <Tabs.Trigger value="terminal" className="tab" ref={terminalTab}>
             Terminal
           </Tabs.Trigger>
         </Tabs.List>
@@ -261,7 +262,10 @@ export function AgentPanel({ paneId, state }: Props) {
         </Tabs.Content>
 
         <Tabs.Content value="terminal" className="tab-panel">
-          <TerminalView paneId={paneId} label={info?.agent.title?.trim() || paneId} active={tab === "terminal" && visible} ended={ended} />
+          <TerminalView
+            paneId={paneId} label={info?.agent.title?.trim() || paneId} active={tab === "terminal" && visible} ended={ended}
+            onLeave={() => terminalTab.current?.focus()}
+          />
         </Tabs.Content>
       </Tabs.Root>
 

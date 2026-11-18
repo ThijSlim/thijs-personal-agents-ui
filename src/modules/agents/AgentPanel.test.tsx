@@ -16,12 +16,14 @@ vi.mock("../../core/ipc", () => ({
   sendInput: vi.fn().mockResolvedValue(undefined),
 }));
 // jsdom has no canvas/matchMedia, which xterm needs.
+const xt = vi.hoisted(() => ({ keyHandler: undefined as undefined | ((e: unknown) => boolean) }));
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
+    options: Record<string, unknown> = {};
     open = vi.fn();
     resize = vi.fn();
     write = vi.fn();
-    attachCustomKeyEventHandler = vi.fn();
+    attachCustomKeyEventHandler = (f: (e: unknown) => boolean) => void (xt.keyHandler = f);
     onData = () => ({ dispose() {} });
     dispose = vi.fn();
   },
@@ -271,6 +273,15 @@ describe("AgentPanel", () => {
     await userEvent.type(replyBox(), " more");
     await act(async () => finish());
     expect(replyBox()).toHaveValue(" more");
+  });
+
+  it("Cmd+Escape in the terminal focuses the Terminal tab", async () => {
+    renderPanel(conv());
+    await screen.findByRole("log");
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Terminal" }), { button: 0 });
+    await screen.findByRole("group", { name: "Terminal for fix bug" });
+    xt.keyHandler!({ key: "Escape", metaKey: true, type: "keydown", preventDefault() {} });
+    expect(screen.getByRole("tab", { name: "Terminal" })).toHaveFocus();
   });
 
   it("no axe violations with the Terminal tab active", async () => {
