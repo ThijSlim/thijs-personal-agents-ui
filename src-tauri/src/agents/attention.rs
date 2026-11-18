@@ -29,6 +29,15 @@ impl Attention {
         self.seen.insert((pane_id.to_string(), state_change_seq));
     }
 
+    /// Forget seen entries that no longer describe a live agent state: the
+    /// pane is gone, or the entry's seq is ahead of the agent's (herdr
+    /// restarted and counts from low again). Without this, a reused pane id
+    /// with a matching seq would hide a new `done` agent.
+    pub fn prune(&mut self, model: &SessionModel) {
+        self.seen
+            .retain(|(pane, seq)| model.agents.get(pane).is_some_and(|a| *seq <= a.state_change_seq));
+    }
+
     /// Blocked agents, then done agents not yet seen; each group newest
     /// state change first.
     pub fn needs_you(&self, model: &SessionModel) -> Vec<NeedsYouItem> {

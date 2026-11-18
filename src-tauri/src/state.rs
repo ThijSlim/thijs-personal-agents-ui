@@ -86,12 +86,14 @@ impl AppState {
             SessionUpdate::NotRunning => {
                 self.client = None;
                 self.model = SessionModel::default();
+                self.attention.prune(&self.model);
                 self.connection = Connection::NotRunning;
                 vec![]
             }
             SessionUpdate::Connected { client, model, changes, live } => {
                 self.client = Some(client);
                 self.model = model;
+                self.attention.prune(&self.model);
                 self.connection = Connection::Connected;
                 changes.iter().filter(|c| should_notify(c, live)).filter_map(|c| self.notice(c)).collect()
             }
@@ -249,6 +251,48 @@ mod tests {
         s.apply(connected(model(vec![agent("w1:p1", "w1", None, AgentStatus::Blocked, 1)]), vec![], false));
         assert!(s.apply(SessionUpdate::Connecting).is_empty());
         assert!(s.client.is_none());
+        assert_eq!(s.to_ui().needs_you.len(), 1);
+    }
+
+    #[test]
+    fn seen_is_forgotten_when_herdr_restarts_and_reuses_pane_and_seq() {
+        let mut s = AppState::default();
+        s.apply(connected(model(vec![agent("w1:p1", "w1", None, AgentStatus::Done, 3)]), vec![], false));
+        s.attention.mark_seen("w1:p1", 3);
+        assert!(s.to_ui().needs_you.is_empty());
+        s.apply(SessionUpdate::NotRunning);
+        // A new herdr server hands out the same pane id and restarts seqs low.
+        s.apply(connected(model(vec![agent("w1:p1", "w1", None, AgentStatus::Done, 3)]), vec![], false));
+        let ids: Vec<_> = s.to_ui().needs_you.into_iter().map(|i| i.pane_id).collect();
+        assert_eq!(ids, vec!["w1:p1"]);
+    }
+
+    #[test]
+    fn seen_entries_for_gone_panes_or_future_seqs_are_pruned() {
+        let mut s = AppState::default();
+        s.apply(connected(
+            model(vec![
+                agent("w1:p1", "w1", None, AgentStatus::Done, 5),
+                agent("w1:p2", "w1", None, AgentStatus::Done, 2),
+            ]),
+            vec![],
+            false,
+        ));
+        s.attention.mark_seen("w1:p1", 5);
+        s.attention.mark_seen("w1:p1", 4);
+        s.attention.mark_seen("w1:p2", 9); // ahead of the agent's seq: stale
+        s.attention.mark_seen("w9:p9", 1); // pane gone
+        s.apply(connected(
+            model(vec![
+                agent("w1:p1", "w1", None, AgentStatus::Done, 5),
+                agent("w1:p2", "w1", None, AgentStatus::Done, 2),
+            ]),
+            vec![],
+            true,
+        ));
+        let mut seen: Vec<_> = s.attention.seen.iter().cloned().collect();
+        seen.sort();
+        assert_eq!(seen, vec![("w1:p1".to_string(), 4), ("w1:p1".to_string(), 5)]);
         assert_eq!(s.to_ui().needs_you.len(), 1);
     }
 
