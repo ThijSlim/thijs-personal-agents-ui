@@ -91,7 +91,6 @@ pub fn run() {
                 ])
                 .build(),
         )
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(AppState::default()))
         .setup(|app| {
