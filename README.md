@@ -12,8 +12,10 @@ followed by `apm install --legacy-skill-paths`.
 Agents shows the herdr agents running in your Spaces, lets you answer them, and
 notifies you when one needs you. It talks to a running herdr server.
 
-1. Start herdr: `herdr` (or `herdr server`). If it isn't running, the app says
-   so and reconnects by itself once it is.
+1. Start herdr: `herdr`. (`herdr server` also works; it runs herdr headless,
+   with no UI.) The app connects to the default session at
+   `~/.config/herdr/herdr.sock`. If herdr isn't running, the app says so and
+   reconnects by itself once it is.
 2. Start the app (`pnpm tauri dev`, or open the built `.app`).
 
 - The sidebar lists Spaces and their agents in herdr's order. Agents that are
@@ -21,7 +23,8 @@ notifies you when one needs you. It talks to a running herdr server.
   counts them. A notification fires when an agent becomes blocked; clicking it
   opens that agent.
 - Select an agent to see its conversation. Type a reply and send it, or use
-  Approve / Deny when it asks for permission. Alt+Up / Alt+Down switch agents.
+  Approve / Deny when it asks for permission. In the sidebar, Alt+Up / Alt+Down moves the focused Space up or down; you can
+  also drag Spaces to reorder them. The order is mirrored in herdr.
 - The Terminal tab shows the agent's screen and forwards your keys. Press
   Cmd+Escape to leave the terminal.
 - Closing the window keeps the app running in the background; click the Dock

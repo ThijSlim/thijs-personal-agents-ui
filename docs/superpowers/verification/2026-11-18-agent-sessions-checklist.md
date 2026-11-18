@@ -30,7 +30,9 @@ Tick each item; note anything unexpected.
 - [ ] Tab reaches sidebar, agent list, panel, reply box and buttons in a sensible order, with a visible focus ring.
 - [ ] Arrow keys move through the agent list.
 - [ ] Enter opens the selected agent / sends the reply as designed.
-- [ ] Alt+Up / Alt+Down move between agents.
+- [ ] Alt+Up / Alt+Down reorders the focused Space in the sidebar, and the new order shows in herdr's TUI.
+- [ ] Alt+Up on the first Space and Alt+Down on the last Space do nothing.
+- [ ] Dragging a Space to a new position reorders it, and herdr's TUI shows the same order.
 - [ ] In the Terminal tab keys are forwarded to the agent; Cmd+Escape leaves the terminal and focus returns to the panel.
 
 ## Accessibility and appearance
