@@ -28,12 +28,17 @@ export function sendReply(paneId: string, text: string): Promise<void> {
   return invoke("send_reply", { paneId, text });
 }
 
-export function approve(paneId: string): Promise<void> {
-  return invoke("approve", { paneId });
+/**
+ * Answer the permission prompt the user read (`question`) with "yes". The
+ * core refuses, sending nothing, if a different prompt (or none) is showing.
+ */
+export function approve(paneId: string, question: string): Promise<void> {
+  return invoke("approve", { paneId, question });
 }
 
-export function deny(paneId: string): Promise<void> {
-  return invoke("deny", { paneId });
+/** Answer the permission prompt the user read (`question`) with "no"; see `approve`. */
+export function deny(paneId: string, question: string): Promise<void> {
+  return invoke("deny", { paneId, question });
 }
 
 export function onSelectAgent(cb: (paneId: string) => void): Promise<UnlistenFn> {

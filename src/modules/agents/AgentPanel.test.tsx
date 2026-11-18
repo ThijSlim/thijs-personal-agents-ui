@@ -80,14 +80,36 @@ describe("AgentPanel", () => {
     expect(screen.getByText(/touch probe\.txt/, { selector: ":not([role=log])" })).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Agent needs approval");
     await userEvent.click(approveButton);
-    expect(approve).toHaveBeenCalledWith("w1:p1");
+    expect(approve).toHaveBeenCalledWith("w1:p1", blocked.permission!.question);
     // The single-answer guard is covered by the stale-read test below.
     second.unmount();
 
     renderPanel(blocked, agent("blocked"));
     await userEvent.click(await screen.findByRole("button", { name: "Deny" }));
-    expect(deny).toHaveBeenCalledWith("w1:p1");
+    expect(deny).toHaveBeenCalledWith("w1:p1", blocked.permission!.question);
     expect(approve).toHaveBeenCalledTimes(1);
+  });
+
+  it("a changed prompt is reported and re-read", async () => {
+    renderPanel(blocked, agent("blocked"));
+    vi.mocked(approve).mockRejectedValueOnce("The prompt changed — check it again.");
+    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The prompt changed — check it again.");
+    await waitFor(() => expect(readConversation).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
+  });
+
+  it("can't send a reply while a permission prompt is showing", async () => {
+    renderPanel(blocked, agent("blocked"));
+    await screen.findByRole("button", { name: "Approve" });
+    await userEvent.type(replyBox(), "no, use pnpm");
+    const send = screen.getByRole("button", { name: "Send" });
+    expect(send).toBeDisabled();
+    expect(screen.getByText("Approve or Deny first")).toBeVisible();
+    expect(send).toHaveAccessibleDescription("Approve or Deny first");
+    await userEvent.keyboard("{Enter}");
+    expect(sendReply).not.toHaveBeenCalled();
+    expect(replyBox()).toHaveValue("no, use pnpm");
   });
 
   it("reply sends exact multi-line unicode text", async () => {
@@ -134,6 +156,31 @@ describe("AgentPanel", () => {
     await waitFor(() => expect(readConversation).toHaveBeenLastCalledWith("w2:p2"));
   });
 
+  it("marks seen again when the open agent's state changes while visible", async () => {
+    const setVisibility = (v: DocumentVisibilityState) => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => v });
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+    try {
+      const { rerender } = renderPanel(conv(), agent("working", 1));
+      expect(markSeen).toHaveBeenCalledTimes(1);
+      rerender(<AgentPanel paneId="w1:p1" state={stateWith(agent("working", 1))} />);
+      expect(markSeen).toHaveBeenCalledTimes(1);
+      rerender(<AgentPanel paneId="w1:p1" state={stateWith(agent("done", 2))} />);
+      expect(markSeen).toHaveBeenCalledTimes(2);
+      act(() => setVisibility("hidden"));
+      rerender(<AgentPanel paneId="w1:p1" state={stateWith(agent("working", 3))} />);
+      rerender(<AgentPanel paneId="w1:p1" state={stateWith(agent("done", 4))} />);
+      expect(markSeen).toHaveBeenCalledTimes(2);
+      // Coming back marks the state now on screen.
+      act(() => setVisibility("visible"));
+      expect(markSeen).toHaveBeenCalledTimes(3);
+      expect(markSeen).toHaveBeenLastCalledWith("w1:p1");
+    } finally {
+      setVisibility("visible");
+    }
+  });
+
   it("re-reads when this pane's state changes, at most every 500 ms", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
     try {
@@ -160,9 +207,10 @@ describe("AgentPanel", () => {
   });
 
   describe("polling while working", () => {
+    // Async so settled reads (microtasks) run between timers, as in real time.
     const tick = (ms: number) =>
       act(async () => {
-        vi.advanceTimersByTime(ms);
+        await vi.advanceTimersByTimeAsync(ms);
       });
     const setVisibility = (v: DocumentVisibilityState) => {
       Object.defineProperty(document, "visibilityState", { configurable: true, get: () => v });
@@ -225,6 +273,18 @@ describe("AgentPanel", () => {
       act(() => setVisibility("visible"));
       await tick(POLL_MS);
       expect(vi.mocked(readConversation).mock.calls.length).toBeGreaterThan(1);
+    });
+
+    it("skips a poll tick while a read is in flight", async () => {
+      let finish!: (c: Conversation) => void;
+      vi.mocked(readConversation).mockImplementation(() => new Promise((r) => (finish = r)));
+      render(<AgentPanel paneId="w1:p1" state={stateWith(agent("working"))} />);
+      expect(readConversation).toHaveBeenCalledTimes(1);
+      await tick(POLL_MS * 3);
+      expect(readConversation).toHaveBeenCalledTimes(1);
+      await act(async () => finish(conv()));
+      await tick(POLL_MS);
+      expect(readConversation).toHaveBeenCalledTimes(2);
     });
 
     it("stops polling on unmount", async () => {

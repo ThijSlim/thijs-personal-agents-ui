@@ -39,6 +39,7 @@ interface Props {
 export function AgentPanel({ paneId, state }: Props) {
   const titleId = useId();
   const replyId = useId();
+  const replyHintId = useId();
   const [conv, setConv] = useState<ConversationData | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -63,10 +64,13 @@ export function AgentPanel({ paneId, state }: Props) {
   // Seq of the last read started before an Approve/Deny press; only reads
   // after it may re-enable the buttons. `null` when not answering.
   const answeredAt = useRef<number | null>(null);
+  // Seq of the read in flight, if any; polling skips a tick while one is.
+  const inFlight = useRef<number | null>(null);
 
   const read = () => {
     lastRead.current = Date.now();
     const mine = ++seq.current;
+    inFlight.current = mine;
     const pane = paneRef.current;
     readConversation(pane)
       .then((c) => {
@@ -83,6 +87,9 @@ export function AgentPanel({ paneId, state }: Props) {
         if (mine !== seq.current) return;
         console.error("read_conversation failed", e);
         setReadError(`Couldn't read the conversation: ${message(e)}`);
+      })
+      .finally(() => {
+        if (inFlight.current === mine) inFlight.current = null;
       });
   };
 
@@ -91,9 +98,8 @@ export function AgentPanel({ paneId, state }: Props) {
     timer.current = undefined;
   };
 
-  // Opening a pane: mark it seen, reset, and read right away.
+  // Opening a pane: reset and read right away.
   useEffect(() => {
-    markSeen(paneId).catch((e) => console.error("mark_seen failed", e));
     setConv(null);
     setReadError(null);
     setActionError(null);
@@ -104,8 +110,17 @@ export function AgentPanel({ paneId, state }: Props) {
     return () => {
       clearTimer();
       seq.current++; // drop any in-flight read for this pane
+      inFlight.current = null;
     };
   }, [paneId]);
+
+  // Mark the open agent seen on open, whenever its state changes, and when
+  // the window comes back, as long as the user can actually see it.
+  const stateSeq = found?.agent.stateChangeSeq;
+  useEffect(() => {
+    if (!visible) return;
+    markSeen(paneId).catch((e) => console.error("mark_seen failed", e));
+  }, [paneId, stateSeq, visible]);
 
   /** Read now, or once READ_INTERVAL_MS has passed since the last read. */
   const requestRead = () => {
@@ -135,13 +150,16 @@ export function AgentPanel({ paneId, state }: Props) {
   const polling = found?.agent.status === "working" && tab === "conversation" && visible;
   useEffect(() => {
     if (!polling) return;
-    const id = setInterval(requestRead, POLL_MS);
+    const id = setInterval(() => {
+      if (inFlight.current === null) requestRead();
+    }, POLL_MS);
     return () => clearInterval(id);
   }, [paneId, polling]);
 
   const ended = conv?.ended ?? false;
   const permission = conv?.permission ?? null;
-  const canSend = !ended && !sending && reply.trim() !== "";
+  // A reply typed into a permission prompt could answer it: answer it first.
+  const canSend = !ended && !sending && !permission && reply.trim() !== "";
 
   const submit = async () => {
     if (!canSend) return;
@@ -159,17 +177,19 @@ export function AgentPanel({ paneId, state }: Props) {
     }
   };
 
-  const answer = async (fn: (id: string) => Promise<void>, verb: string) => {
+  const answer = async (fn: (id: string, question: string) => Promise<void>, verb: string) => {
+    if (!permission) return;
     setAnswering(true);
     answeredAt.current = seq.current;
     setActionError(null);
     try {
-      await fn(paneId);
+      await fn(paneId, permission.question);
       read(); // don't wait for a status change that may never come
     } catch (e) {
       answeredAt.current = null;
       setAnswering(false);
       setActionError(`Couldn't ${verb}: ${message(e)}`);
+      read(); // the prompt may have changed: show what's there now
     }
   };
 
@@ -255,9 +275,19 @@ export function AgentPanel({ paneId, state }: Props) {
                 void submit();
               }}
             />
-            <button type="submit" className="button primary" disabled={!canSend}>
+            <button
+              type="submit"
+              className="button primary"
+              disabled={!canSend}
+              aria-describedby={permission && !ended ? replyHintId : undefined}
+            >
               Send
             </button>
+            {permission && !ended && (
+              <p id={replyHintId} className="hint">
+                Approve or Deny first
+              </p>
+            )}
           </form>
         </Tabs.Content>
 
