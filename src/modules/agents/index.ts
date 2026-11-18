@@ -1,0 +1,14 @@
+import { createElement } from "react";
+import type { AppModule } from "../../core/modules";
+import { useUiState } from "../../core/ipc";
+import { Sidebar } from "./Sidebar";
+
+export const agentsModule: AppModule = {
+  id: "agents",
+  title: "Agents",
+  Sidebar: ({ selection, onSelect }) => createElement(Sidebar, { state: useUiState(), selection, onSelect }),
+  Main: ({ selection }) =>
+    selection?.module === "agents"
+      ? createElement("p", null, `Selected: ${selection.id}`)
+      : createElement("p", { className: "muted" }, "Select an agent."),
+};
