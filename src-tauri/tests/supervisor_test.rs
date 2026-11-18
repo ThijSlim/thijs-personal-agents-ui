@@ -3,7 +3,7 @@ mod fake_herdr;
 use std::time::Duration;
 
 use agents_lib::herdr::model::{AgentStatus, ModelChange};
-use agents_lib::herdr::supervisor::{SessionUpdate, run};
+use agents_lib::herdr::supervisor::{SessionUpdate, run, run_with_timeout};
 use fake_herdr::{FakeHerdr, fixture_snapshot};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -94,7 +94,7 @@ async fn subscribes_to_lifecycle_and_every_pane_status() {
         .iter()
         .map(|s| s["type"].as_str().unwrap())
         .collect();
-    for t in ["workspace.created", "workspace.moved", "workspace.closed", "tab.closed", "pane.created", "pane.closed", "pane.moved", "pane.exited", "pane.agent_detected"] {
+    for t in ["workspace.created", "workspace.moved", "workspace.closed", "tab.created", "tab.closed", "pane.created", "pane.closed", "pane.moved", "pane.exited", "pane.agent_detected"] {
         assert!(types.contains(&t), "missing {t} in {types:?}");
     }
     let mut panes = status_sub_panes(&req);
@@ -154,6 +154,67 @@ async fn pane_created_resubscribes_with_new_pane() {
                 old: None,
                 new: AgentStatus::Idle,
             }), "changes: {changes:?}");
+        }
+        other => panic!("expected Connected, got {other:?}"),
+    }
+    sup.abort();
+}
+
+#[tokio::test]
+async fn supervisor_retries_when_herdr_never_replies() {
+    let (fake, path) = FakeHerdr::start();
+    fake.on_never("session.snapshot");
+    let (tx, mut rx) = mpsc::channel(32);
+    let sup = tokio::spawn(run_with_timeout(path, tx, Duration::from_millis(200)));
+    assert!(matches!(next(&mut rx).await, SessionUpdate::Connecting), "hung herdr must not block the supervisor");
+
+    fake.on("session.snapshot", fixture_snapshot());
+    let connected = loop {
+        match next(&mut rx).await {
+            SessionUpdate::Connected { live, .. } => break live,
+            _ => continue,
+        }
+    };
+    assert!(!connected);
+    sup.abort();
+}
+
+#[tokio::test]
+async fn workspace_created_resubscribes_with_root_pane() {
+    let (fake, path) = FakeHerdr::start();
+    fake.on("session.snapshot", fixture_snapshot());
+    let (tx, mut rx) = mpsc::channel(32);
+    let sup = tokio::spawn(run(path, tx));
+    assert!(matches!(next(&mut rx).await, SessionUpdate::Connected { live: false, .. }));
+
+    // herdr now has workspace w4 with root pane w4:p1 (not an agent).
+    let mut snap = fixture_snapshot();
+    let mut ws = snap["snapshot"]["workspaces"][0].clone();
+    ws["workspace_id"] = json!("w4");
+    ws["label"] = json!("gamma");
+    let mut pane = snap["snapshot"]["panes"][1].clone();
+    pane["pane_id"] = json!("w4:p1");
+    pane["workspace_id"] = json!("w4");
+    pane["tab_id"] = json!("w4:t1");
+    snap["snapshot"]["workspaces"].as_array_mut().unwrap().push(ws.clone());
+    snap["snapshot"]["panes"].as_array_mut().unwrap().push(pane.clone());
+    fake.on("session.snapshot", snap);
+    fake.push_event(json!({"event": "workspace_created", "data": {
+        "type": "workspace_created", "workspace": ws,
+        "tab": {"tab_id": "w4:t1", "workspace_id": "w4"}, "root_pane": pane
+    }}));
+
+    let req = fake
+        .wait_for_request(|r| {
+            r["method"] == "events.subscribe" && status_sub_panes(r).contains(&"w4:p1".to_string())
+        })
+        .await;
+    assert!(status_sub_panes(&req).contains(&"w1:p1".to_string()));
+    match next(&mut rx).await {
+        SessionUpdate::Connected { live, changes, model, .. } => {
+            assert!(live);
+            assert!(model.spaces.iter().any(|s| s.id == "w4"));
+            assert!(changes.contains(&ModelChange::SpacesChanged), "changes: {changes:?}");
         }
         other => panic!("expected Connected, got {other:?}"),
     }

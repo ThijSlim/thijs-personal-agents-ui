@@ -2,7 +2,7 @@ mod fake_herdr;
 
 use std::time::Duration;
 
-use agents_lib::herdr::client::{HerdrClient, HerdrError, default_socket_path, subscribe};
+use agents_lib::herdr::client::{HerdrClient, HerdrError, default_socket_path, subscribe, subscribe_with_timeout};
 use fake_herdr::FakeHerdr;
 use serde_json::json;
 use tokio::time::timeout;
@@ -85,6 +85,38 @@ async fn subscribe_receives_pushed_events() {
 
     fake.stop();
     assert!(timeout(T, rx.recv()).await.unwrap().is_none(), "receiver closes with the socket");
+}
+
+const SHORT: Duration = Duration::from_millis(200);
+
+#[tokio::test]
+async fn call_times_out_when_herdr_never_replies() {
+    let (fake, path) = FakeHerdr::start();
+    fake.on_never("session.snapshot");
+    let client = timeout(T, HerdrClient::connect_with_timeout(&path, SHORT)).await.unwrap().unwrap();
+    let err = timeout(T, client.call("session.snapshot", json!({}))).await.expect("call must time out").unwrap_err();
+    assert!(matches!(err, HerdrError::Disconnected), "got {err:?}");
+}
+
+#[tokio::test]
+async fn subscribe_times_out_without_ack() {
+    let (fake, path) = FakeHerdr::start();
+    fake.on_never("events.subscribe");
+    let err = timeout(T, subscribe_with_timeout(&path, json!([]), SHORT))
+        .await
+        .expect("subscribe must time out")
+        .unwrap_err();
+    assert!(matches!(err, HerdrError::Disconnected), "got {err:?}");
+}
+
+#[tokio::test]
+async fn malformed_line_in_stream_is_skipped() {
+    let (fake, path) = FakeHerdr::start();
+    let mut rx = timeout(T, subscribe(&path, json!([]))).await.unwrap().unwrap();
+    fake.push_raw("this is not json");
+    fake.push_event(json!({"event": "pane_closed", "data": {"pane_id": "w1:p1"}}));
+    let ev = timeout(T, rx.recv()).await.unwrap().expect("stream survives a malformed line");
+    assert_eq!(ev.kind, "pane_closed");
 }
 
 /// Smoke test against a real herdr. NEVER point this at your default session:

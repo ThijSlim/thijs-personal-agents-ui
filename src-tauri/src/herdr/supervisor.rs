@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use super::client::{HerdrClient, HerdrError, subscribe};
+use super::client::{DEFAULT_TIMEOUT, HerdrClient, HerdrError, subscribe_with_timeout};
 use super::model::{ModelChange, SessionModel};
 use super::protocol::HerdrEvent;
 
@@ -25,6 +25,7 @@ const LIFECYCLE_EVENTS: &[&str] = &[
     "workspace.moved",
     "workspace.reordered",
     "workspace.closed",
+    "tab.created",
     "tab.closed",
     "pane.created",
     "pane.closed",
@@ -50,10 +51,15 @@ pub enum SessionUpdate {
 /// Run forever (until `tx` is closed): connect, snapshot, subscribe, stream
 /// updates; on failure report and retry with exponential backoff.
 pub async fn run(path: PathBuf, tx: mpsc::Sender<SessionUpdate>) {
+    run_with_timeout(path, tx, DEFAULT_TIMEOUT).await
+}
+
+/// `run` with a custom per-request timeout (connect, calls, subscription acks).
+pub async fn run_with_timeout(path: PathBuf, tx: mpsc::Sender<SessionUpdate>, timeout: Duration) {
     let mut model = SessionModel::default();
     let mut backoff = BACKOFF_START;
     loop {
-        let err = session(&path, &tx, &mut model, &mut backoff).await;
+        let err = session(&path, &tx, &mut model, &mut backoff, timeout).await;
         let update = match err {
             Some(HerdrError::NotRunning) => SessionUpdate::NotRunning,
             Some(_) => SessionUpdate::Connecting,
@@ -74,12 +80,13 @@ async fn session(
     tx: &mpsc::Sender<SessionUpdate>,
     model: &mut SessionModel,
     backoff: &mut Duration,
+    timeout: Duration,
 ) -> Option<HerdrError> {
-    let client = match HerdrClient::connect(path).await {
+    let client = match HerdrClient::connect_with_timeout(path, timeout).await {
         Ok(c) => c,
         Err(e) => return Some(e),
     };
-    let (new_model, mut panes, rx) = match sync(&client, path, None).await {
+    let (new_model, mut panes, rx) = match sync(&client, path, None, timeout).await {
         Ok(s) => s,
         Err(e) => return Some(e),
     };
@@ -106,7 +113,7 @@ async fn session(
             _ = tx.closed() => return None,
         };
         let changes = if needs_resync(&ev, &panes) {
-            let (new_model, new_panes, rx) = match sync(&client, path, Some(&panes)).await {
+            let (new_model, new_panes, rx) = match sync(&client, path, Some(&panes), timeout).await {
                 Ok(s) => s,
                 Err(e) => return Some(e),
             };
@@ -138,6 +145,7 @@ async fn sync(
     client: &HerdrClient,
     path: &Path,
     subscribed: Option<&BTreeSet<String>>,
+    timeout: Duration,
 ) -> Result<(SessionModel, BTreeSet<String>, Option<mpsc::Receiver<HerdrEvent>>), HerdrError> {
     let mut current = subscribed.cloned();
     let mut rx = None;
@@ -146,7 +154,7 @@ async fn sync(
         if current.as_ref() == Some(&panes) {
             break;
         }
-        rx = Some(subscribe(path, subscriptions(&panes)).await?);
+        rx = Some(subscribe_with_timeout(path, subscriptions(&panes), timeout).await?);
         current = Some(panes);
         (model, panes) = snapshot(client).await?;
     }
@@ -175,13 +183,15 @@ fn subscriptions(panes: &BTreeSet<String>) -> Value {
 }
 
 /// Events that change the set of panes (or reveal one we don't watch) need a
-/// fresh subscription and snapshot rather than an incremental apply.
+/// fresh subscription and snapshot rather than an incremental apply. New
+/// workspaces and tabs bring a root pane; closing them removes panes.
 fn needs_resync(ev: &HerdrEvent, panes: &BTreeSet<String>) -> bool {
     let unknown_pane = || {
         ev.data.get("pane_id").and_then(Value::as_str).is_none_or(|p| !panes.contains(p))
     };
     match ev.kind.replace('.', "_").as_str() {
-        "pane_created" | "pane_closed" | "pane_moved" | "pane_exited" => true,
+        "pane_created" | "pane_closed" | "pane_moved" | "pane_exited" | "tab_created" | "tab_closed"
+        | "workspace_created" | "workspace_closed" => true,
         "pane_agent_detected" | "pane_agent_status_changed" => unknown_pane(),
         _ => false,
     }

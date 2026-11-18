@@ -446,6 +446,23 @@ mod tests {
     }
 
     #[test]
+    fn replayed_status_equal_to_snapshot_is_no_change() {
+        // An event already reflected in the snapshot (the replay window after
+        // subscribe + snapshot) must not yield a second transition.
+        let mut m = snapshot_model();
+        assert_eq!(m.agents["w1:p1"].status, AgentStatus::Blocked);
+        let seq = m.agents["w1:p1"].state_change_seq;
+        let replay = event(
+            "pane.agent_status_changed",
+            json!({"pane_id":"w1:p1","workspace_id":"w1","agent":"claude","agent_status":"blocked"}),
+        );
+        assert!(m.apply_event(&replay).is_empty());
+        assert!(m.apply_event(&replay).is_empty());
+        assert_eq!(m.agents["w1:p1"].status, AgentStatus::Blocked);
+        assert_eq!(m.agents["w1:p1"].state_change_seq, seq);
+    }
+
+    #[test]
     fn status_changes_bump_state_change_seq() {
         let mut m = snapshot_model();
         let base = m.agents["w1:p1"].state_change_seq;

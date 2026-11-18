@@ -24,6 +24,8 @@ enum Reply {
     Err { code: String, message: String },
     /// Answer only after the gate is opened.
     Deferred(Value, Arc<Notify>),
+    /// Read the request, keep the connection open, never answer.
+    Never,
 }
 
 /// Releases a deferred reply registered with `FakeHerdr::on_deferred`.
@@ -41,7 +43,15 @@ struct State {
     requests: Mutex<Vec<Value>>,
     request_seen: Notify,
     subscribers: Mutex<Vec<mpsc::UnboundedSender<String>>>,
-    tasks: Mutex<Vec<JoinHandle<()>>>,
+    conns: Mutex<Conns>,
+}
+
+/// Listener + connection tasks. `running` is checked under the same lock the
+/// accept loop uses to register a new connection, so `stop()` cannot miss one.
+#[derive(Default)]
+struct Conns {
+    running: bool,
+    tasks: Vec<JoinHandle<()>>,
 }
 
 pub struct FakeHerdr {
@@ -95,6 +105,19 @@ impl FakeHerdr {
         Gate(gate)
     }
 
+    /// Accept requests for `method` but never reply (connection stays open).
+    pub fn on_never(&self, method: &str) {
+        self.state.replies.lock().unwrap().insert(method.into(), Reply::Never);
+    }
+
+    /// Write a raw line (e.g. malformed JSON) to every subscribed connection.
+    pub fn push_raw(&self, line: &str) -> usize {
+        let line = format!("{line}\n");
+        let mut subs = self.state.subscribers.lock().unwrap();
+        subs.retain(|tx| tx.send(line.clone()).is_ok());
+        subs.len()
+    }
+
     /// Write an event line to every live subscribed connection. Returns how many got it.
     pub fn push_event(&self, event: Value) -> usize {
         let line = format!("{event}\n");
@@ -108,24 +131,33 @@ impl FakeHerdr {
         self.state.requests.lock().unwrap().clone()
     }
 
-    /// Wait until a request matching `pred` has been received and return it.
+    /// Wait (at most 2 s, then panic) until a request matching `pred` has
+    /// been received and return it.
     pub async fn wait_for_request(&self, pred: impl Fn(&Value) -> bool) -> Value {
-        loop {
-            let notified = self.state.request_seen.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if let Some(r) = self.requests().into_iter().find(|r| pred(r)) {
-                return r;
+        let wait = async {
+            loop {
+                let notified = self.state.request_seen.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if let Some(r) = self.requests().into_iter().find(|r| pred(r)) {
+                    return r;
+                }
+                notified.await;
             }
-            notified.await;
-        }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), wait)
+            .await
+            .expect("fake herdr: expected request not received within 2s")
     }
 
     /// Close the listener and every open connection, and remove the socket file.
     pub fn stop(&self) {
-        for t in self.state.tasks.lock().unwrap().drain(..) {
+        let mut conns = self.state.conns.lock().unwrap();
+        conns.running = false;
+        for t in conns.tasks.drain(..) {
             t.abort();
         }
+        drop(conns);
         self.state.subscribers.lock().unwrap().clear();
         let _ = std::fs::remove_file(&self.path);
     }
@@ -140,14 +172,19 @@ impl FakeHerdr {
         let _ = std::fs::remove_file(&self.path);
         let listener = UnixListener::bind(&self.path).unwrap();
         let state = self.state.clone();
+        let mut conns = self.state.conns.lock().unwrap();
+        conns.running = true;
         let accept = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
-                let s = state.clone();
-                let handle = tokio::spawn(serve(stream, s));
-                state.tasks.lock().unwrap().push(handle);
+                let mut conns = state.conns.lock().unwrap();
+                if !conns.running {
+                    break; // stopped while accepting: drop the stream
+                }
+                let handle = tokio::spawn(serve(stream, state.clone()));
+                conns.tasks.push(handle);
             }
         });
-        self.state.tasks.lock().unwrap().push(accept);
+        conns.tasks.push(accept);
     }
 }
 
@@ -171,6 +208,12 @@ async fn serve(stream: UnixStream, state: Arc<State>) {
     state.requests.lock().unwrap().push(req);
     state.request_seen.notify_waiters();
 
+    let reply = state.replies.lock().unwrap().get(&method).cloned();
+    if matches!(reply, Some(Reply::Never)) {
+        while let Ok(Some(_)) = lines.next_line().await {}
+        return;
+    }
+
     if method == "events.subscribe" {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let _ = tx.send(line_of(json!({"id": id, "result": {"type": "subscription_started"}})));
@@ -190,7 +233,6 @@ async fn serve(stream: UnixStream, state: Arc<State>) {
         return;
     }
 
-    let reply = state.replies.lock().unwrap().get(&method).cloned();
     let response = match reply {
         Some(Reply::Ok(result)) => json!({"id": id, "result": result}),
         Some(Reply::Err { code, message }) => json!({"id": id, "error": {"code": code, "message": message}}),
@@ -198,6 +240,7 @@ async fn serve(stream: UnixStream, state: Arc<State>) {
             gate.notified().await;
             json!({"id": id, "result": result})
         }
+        Some(Reply::Never) => unreachable!(),
         None => json!({
             "id": id,
             "error": {"code": "unknown_method", "message": format!("no script for {method}")}
