@@ -101,28 +101,42 @@ fn strip_escapes(raw: &str) -> String {
     out
 }
 
-/// Find a Claude Code style permission prompt ("Do you want to ...?"
-/// followed by numbered options) on the screen and return its question:
-/// the prompt box from its top rule down to the question line, without
-/// tips and dashed separators.
+/// Most lines a wrapped "Do you want to ...?" question may span.
+const MAX_QUESTION_LINES: usize = 4;
+
+/// Find a Claude Code style permission prompt ("Do you want to ...?",
+/// possibly wrapped over up to `MAX_QUESTION_LINES` lines, followed by
+/// numbered options) on the screen and return its question: the prompt box
+/// from its top rule down to the question, without tips and dashed
+/// separators. A wrapped question is joined into one line.
 pub fn detect_permission(screen: &str) -> Option<PermissionPrompt> {
     let lines: Vec<&str> = screen.lines().map(str::trim).collect();
-    let ask = lines.iter().rposition(|l| l.starts_with("Do you want to") && l.ends_with('?'))?;
-    let has_options = lines[ask + 1..]
+    let (ask, end) = (0..lines.len()).rev().find_map(|i| {
+        if !lines[i].starts_with("Do you want to") {
+            return None;
+        }
+        let end = (i..lines.len().min(i + MAX_QUESTION_LINES))
+            .take_while(|&j| !lines[j].is_empty())
+            .find(|&j| lines[j].ends_with('?'))?;
+        has_options(&lines[end + 1..]).then_some((i, end))
+    })?;
+    let start = lines[..ask].iter().rposition(|l| is_rule(l, '─')).map_or(ask, |i| i + 1);
+    let mut question: Vec<String> = lines[start..ask]
+        .iter()
+        .filter(|l| !l.is_empty() && !is_rule(l, '╌') && !l.starts_with("Tip:"))
+        .map(|l| l.to_string())
+        .collect();
+    question.push(lines[ask..=end].join(" "));
+    Some(PermissionPrompt { question: question.join("\n") })
+}
+
+/// Numbered options ("1. ...", maybe behind the `❯` cursor) right below.
+fn has_options(after: &[&str]) -> bool {
+    after
         .iter()
         .filter(|l| !l.is_empty())
         .take(2)
-        .any(|l| l.trim_start_matches('❯').trim_start().starts_with("1. "));
-    if !has_options {
-        return None;
-    }
-    let start = lines[..ask].iter().rposition(|l| is_rule(l, '─')).map_or(ask, |i| i + 1);
-    let question: Vec<&str> = lines[start..=ask]
-        .iter()
-        .copied()
-        .filter(|l| !l.is_empty() && !is_rule(l, '╌') && !l.starts_with("Tip:"))
-        .collect();
-    Some(PermissionPrompt { question: question.join("\n") })
+        .any(|l| l.trim_start_matches('❯').trim_start().starts_with("1. "))
 }
 
 fn is_rule(line: &str, ch: char) -> bool {
@@ -169,6 +183,36 @@ mod tests {
         assert!(!p.question.contains('╌'), "{:?}", p.question);
         // The conversation above the prompt is not part of the question.
         assert!(!p.question.contains("Run the shell command"), "{:?}", p.question);
+    }
+
+    #[test]
+    fn detects_wrapped_question() {
+        // A narrow pane wraps the question over several lines.
+        let screen = PERMISSION.replace(
+            "Do you want to proceed?",
+            "Do you want to make this edit\n to a_really_long_file_name\n.rs?",
+        );
+        let p = detect_permission(&screen).expect("wrapped permission prompt");
+        assert!(p.question.contains("touch probe.txt"), "{:?}", p.question);
+        assert!(
+            p.question.ends_with("Do you want to make this edit to a_really_long_file_name .rs?"),
+            "{:?}",
+            p.question
+        );
+        assert!(!p.question.contains("Tip:"), "{:?}", p.question);
+
+        let edit = "────────\n Edit file\n src/main.rs\n╌╌╌╌\n 1 - old\n 1 + new\n╌╌╌╌\n Do you want to make this\n edit to main.rs?\n ❯ 1. Yes\n   2. No\n";
+        let p = detect_permission(edit).expect("wrapped edit prompt");
+        assert_eq!(p.question, "Edit file\nsrc/main.rs\n1 - old\n1 + new\nDo you want to make this edit to main.rs?");
+    }
+
+    #[test]
+    fn wrapped_question_is_bounded() {
+        // More than four lines without a "?" is not a question.
+        let long = "Do you want to\na\nb\nc\nd?\n❯ 1. Yes\n";
+        assert_eq!(detect_permission(long), None);
+        // A blank line ends the question.
+        assert_eq!(detect_permission("Do you want to\n\nproceed?\n❯ 1. Yes"), None);
     }
 
     #[test]
