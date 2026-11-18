@@ -179,7 +179,9 @@ async fn answer_reports_read_errors_without_pressing() {
 
 /// Live check against a named dev session with Claude Code in `HERDR_LIVE_PANE`
 /// (manual permission mode) waiting at a Bash permission prompt for
-/// `touch probe.txt`. Approves it, then replies with multi-line unicode text.
+/// `touch probe.txt`. Checks a reply can't answer the prompt and a stale
+/// question presses nothing, approves it, then replies with multi-line
+/// unicode text.
 ///   HERDR_SESSION=agents-ui-dev herdr server &
 ///   HERDR_SOCKET_PATH=~/.config/herdr/sessions/agents-ui-dev/herdr.sock HERDR_LIVE_PANE=w1:p1 \
 ///     cargo test --manifest-path src-tauri/Cargo.toml --test conversation_test -- --ignored --nocapture
@@ -216,9 +218,24 @@ async fn real_herdr_approve_and_reply() {
         conv.text.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")
     );
     assert!(!conv.ended);
-    assert!(conv.permission.expect("permission").question.contains("touch"));
+    let question = conv.permission.expect("permission").question;
+    assert!(question.contains("touch"));
 
-    press(&c, &pane, APPROVE_KEYS).await.unwrap();
+    // herdr refuses a prompt while the agent is blocked: the reply can't
+    // answer the permission prompt, and nothing is typed.
+    let err = reply(&c, &pane, "no, use pnpm").await.unwrap_err();
+    println!("--- reply while blocked ---\n{err}");
+    assert!(err.contains("agent_blocked"), "{err}");
+    assert_eq!(status(c.clone(), pane.clone()).await, AgentStatus::Blocked);
+
+    // A question other than the one on screen presses nothing.
+    let err = answer(&c, &pane, Some(AgentStatus::Blocked), "Do you want to delete everything?", APPROVE_KEYS)
+        .await
+        .unwrap_err();
+    assert_eq!(err, PROMPT_CHANGED);
+    assert_eq!(status(c.clone(), pane.clone()).await, AgentStatus::Blocked);
+
+    answer(&c, &pane, Some(AgentStatus::Blocked), &question, APPROVE_KEYS).await.unwrap();
     wait_until(AgentStatus::Idle).await;
     let conv = conversation(&c, &pane, Some(AgentStatus::Idle)).await.unwrap();
     println!(
