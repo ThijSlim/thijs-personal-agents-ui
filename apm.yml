@@ -7,6 +7,7 @@ author: Thijs Limmen
 # Accepted values: agent-skills, antigravity, claude, codex, copilot, cursor, gemini, grok-bot, grok-build, hermes, kiro, opencode, vscode, windsurf
 targets:
   - copilot
+  - claude
 dependencies:
   apm:
     - obra/superpowers/skills/brainstorming

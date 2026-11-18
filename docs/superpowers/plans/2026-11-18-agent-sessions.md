@@ -194,6 +194,7 @@ docs/herdr/herdr-api.schema.json
   - `types.ts` mirrors `UiState`, `SpaceView`, `Agent`, `NeedsYouItem`, `AgentStatus`.
   - `modules.ts`: `interface AppModule { id: string; title: string; Sidebar?: React.FC<{selection: Selection; onSelect(s: Selection): void}>; Main?: React.FC<{selection: Selection}> }` with `type Selection = { module: string; id: string } | null` and `const modules: AppModule[]`. Storage and event hooks are added to this contract in build step 3, when the first module needs them.
   - `useUiState(): UiState` hook in `ipc.ts` (initial `getState()` plus a subscription).
+  - `onSelectAgent(cb: (paneId: string) => void)` in `ipc.ts`. It listens for the `"select-agent"` event from Task 4, and `App.tsx` uses it to set the selection.
 
 - [ ] **Step 1: Write the failing tests** `Sidebar.test.tsx` (mock `ipc`):
   - `shows needs-you section with count and items`: a heading "Needs you (2)" and items containing "Blocked" and "Done" as text.

@@ -2,6 +2,7 @@
 
 ## Agent skills
 
-Agent skills are managed with APM. Run `apm install` after cloning or changing
-`apm.yml`; run `apm update` to refresh dependencies. Superpowers skills are
-deployed to `.agents/skills/`.
+Agent skills are managed with APM. Run `apm install --legacy-skill-paths` after
+cloning or changing `apm.yml`; this deploys to Claude Code's `.claude/skills/`
+and Copilot's `.github/skills/`. To refresh upstream versions, run `apm update`
+followed by `apm install --legacy-skill-paths`.
