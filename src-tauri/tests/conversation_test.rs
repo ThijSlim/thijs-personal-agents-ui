@@ -2,8 +2,8 @@ mod fake_herdr;
 
 use std::time::Duration;
 
-use agents_lib::agents::prompt::{APPROVE_KEYS, DENY_KEYS};
-use agents_lib::commands::{conversation, press, reply};
+use agents_lib::agents::prompt::{APPROVE_KEYS, DENY_KEYS, detect_permission};
+use agents_lib::commands::{PROMPT_CHANGED, answer, conversation, press, reply};
 use agents_lib::herdr::client::HerdrClient;
 use agents_lib::herdr::model::AgentStatus;
 use fake_herdr::FakeHerdr;
@@ -115,6 +115,66 @@ async fn press_sends_keys() {
         keys,
         vec![json!({ "pane_id": "w1:p1", "keys": ["1"] }), json!({ "pane_id": "w1:p1", "keys": ["esc"] })]
     );
+}
+
+fn sent_keys(fake: &FakeHerdr) -> Vec<Value> {
+    fake.requests().into_iter().filter(|r| r["method"] == "pane.send_keys").map(|r| r["params"].clone()).collect()
+}
+
+#[tokio::test]
+async fn answer_presses_keys_when_the_prompt_is_the_one_shown() {
+    let (fake, path) = FakeHerdr::start();
+    fake.on("pane.read", read_result(PERMISSION));
+    fake.on("pane.send_keys", json!({ "type": "ok" }));
+    let c = client(&path).await;
+    let question = detect_permission(PERMISSION).unwrap().question;
+    timeout(T, answer(&c, "w1:p1", Some(AgentStatus::Blocked), &question, APPROVE_KEYS)).await.unwrap().unwrap();
+    assert_eq!(reads(&fake), vec![json!({ "pane_id": "w1:p1", "source": "detection" })]);
+    assert_eq!(sent_keys(&fake), vec![json!({ "pane_id": "w1:p1", "keys": ["1"] })]);
+}
+
+#[tokio::test]
+async fn answer_refuses_when_the_prompt_changed() {
+    let (fake, path) = FakeHerdr::start();
+    fake.on("pane.read", read_result(&PERMISSION.replace("touch probe.txt", "rm -rf build")));
+    fake.on("pane.send_keys", json!({ "type": "ok" }));
+    let c = client(&path).await;
+    let question = detect_permission(PERMISSION).unwrap().question;
+    let err = timeout(T, answer(&c, "w1:p1", Some(AgentStatus::Blocked), &question, DENY_KEYS)).await.unwrap().unwrap_err();
+    assert_eq!(err, PROMPT_CHANGED);
+    assert!(sent_keys(&fake).is_empty());
+
+    // No prompt on screen at all.
+    fake.on("pane.read", read_result("all done\n"));
+    let err = timeout(T, answer(&c, "w1:p1", Some(AgentStatus::Blocked), &question, APPROVE_KEYS)).await.unwrap().unwrap_err();
+    assert_eq!(err, PROMPT_CHANGED);
+    assert!(sent_keys(&fake).is_empty());
+}
+
+#[tokio::test]
+async fn answer_refuses_when_not_blocked() {
+    let (fake, path) = FakeHerdr::start();
+    fake.on("pane.read", read_result(PERMISSION));
+    fake.on("pane.send_keys", json!({ "type": "ok" }));
+    let c = client(&path).await;
+    let question = detect_permission(PERMISSION).unwrap().question;
+    for status in [Some(AgentStatus::Working), Some(AgentStatus::Idle), None] {
+        let err = timeout(T, answer(&c, "w1:p1", status, &question, APPROVE_KEYS)).await.unwrap().unwrap_err();
+        assert_eq!(err, PROMPT_CHANGED, "{status:?}");
+    }
+    assert!(sent_keys(&fake).is_empty());
+    assert!(reads(&fake).is_empty(), "no read unless blocked");
+}
+
+#[tokio::test]
+async fn answer_reports_read_errors_without_pressing() {
+    let (fake, path) = FakeHerdr::start();
+    fake.on_error("pane.read", "internal", "boom");
+    fake.on("pane.send_keys", json!({ "type": "ok" }));
+    let c = client(&path).await;
+    let err = timeout(T, answer(&c, "w1:p1", Some(AgentStatus::Blocked), "q?", APPROVE_KEYS)).await.unwrap().unwrap_err();
+    assert!(err.contains("boom"), "{err}");
+    assert!(sent_keys(&fake).is_empty());
 }
 
 /// Live check against a named dev session with Claude Code in `HERDR_LIVE_PANE`

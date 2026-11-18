@@ -52,11 +52,7 @@ pub async fn move_space(
 /// Read an agent's recent output and any pending permission prompt.
 #[tauri::command]
 pub async fn read_conversation(state: State<'_, Mutex<AppState>>, pane_id: String) -> Result<Conversation, String> {
-    let (client, status) = {
-        let s = state.lock().await;
-        let client = s.client.clone().ok_or_else(|| "herdr isn't running".to_string())?;
-        (client, s.model.agents.get(&pane_id).map(|a| a.status))
-    };
+    let (client, status) = client_and_status(&state, &pane_id).await?;
     conversation(&client, &pane_id, status).await
 }
 
@@ -67,18 +63,18 @@ pub async fn send_reply(state: State<'_, Mutex<AppState>>, pane_id: String, text
     reply(&client, &pane_id, &text).await
 }
 
-/// Answer the agent's permission prompt with "yes".
+/// Answer the permission prompt showing `question` with "yes".
 #[tauri::command]
-pub async fn approve(state: State<'_, Mutex<AppState>>, pane_id: String) -> Result<(), String> {
-    let client = client(&state).await?;
-    press(&client, &pane_id, APPROVE_KEYS).await.map_err(|e| format!("couldn't approve: {e}"))
+pub async fn approve(state: State<'_, Mutex<AppState>>, pane_id: String, question: String) -> Result<(), String> {
+    let (client, status) = client_and_status(&state, &pane_id).await?;
+    answer(&client, &pane_id, status, &question, APPROVE_KEYS).await
 }
 
-/// Answer the agent's permission prompt with "no".
+/// Answer the permission prompt showing `question` with "no".
 #[tauri::command]
-pub async fn deny(state: State<'_, Mutex<AppState>>, pane_id: String) -> Result<(), String> {
-    let client = client(&state).await?;
-    press(&client, &pane_id, DENY_KEYS).await.map_err(|e| format!("couldn't deny: {e}"))
+pub async fn deny(state: State<'_, Mutex<AppState>>, pane_id: String, question: String) -> Result<(), String> {
+    let (client, status) = client_and_status(&state, &pane_id).await?;
+    answer(&client, &pane_id, status, &question, DENY_KEYS).await
 }
 
 /// The pane's visible screen, ANSI-styled, for the Terminal tab.
@@ -195,6 +191,32 @@ pub async fn reply(client: &HerdrClient, pane_id: &str, text: &str) -> Result<()
     client.call("agent.prompt", params).await.map(|_| ()).map_err(|e| format!("couldn't send the reply: {e}"))
 }
 
+/// Why an Approve/Deny was refused: what the user read is no longer the
+/// prompt on screen.
+pub const PROMPT_CHANGED: &str = "The prompt changed — check it again.";
+
+/// Press `keys` to answer the permission prompt, but only if the agent is
+/// `blocked` and the prompt on screen right now is the one the user read
+/// (`question`); otherwise nothing is sent and `PROMPT_CHANGED` is returned.
+pub async fn answer(
+    client: &HerdrClient,
+    pane_id: &str,
+    status: Option<AgentStatus>,
+    question: &str,
+    keys: &[&str],
+) -> Result<(), String> {
+    if status != Some(AgentStatus::Blocked) {
+        return Err(PROMPT_CHANGED.into());
+    }
+    let screen = read_text(client, json!({ "pane_id": pane_id, "source": "detection" }))
+        .await
+        .map_err(|e| format!("couldn't read the prompt: {e}"))?;
+    if detect_permission(&screen).is_none_or(|p| p.question != question) {
+        return Err(PROMPT_CHANGED.into());
+    }
+    press(client, pane_id, keys).await
+}
+
 /// Send key presses to the pane via `pane.send_keys`.
 pub async fn press(client: &HerdrClient, pane_id: &str, keys: &[&str]) -> Result<(), String> {
     client
@@ -202,6 +224,15 @@ pub async fn press(client: &HerdrClient, pane_id: &str, keys: &[&str]) -> Result
         .await
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+async fn client_and_status(
+    state: &Mutex<AppState>,
+    pane_id: &str,
+) -> Result<(HerdrClient, Option<AgentStatus>), String> {
+    let s = state.lock().await;
+    let client = s.client.clone().ok_or_else(|| "herdr isn't running".to_string())?;
+    Ok((client, s.model.agents.get(pane_id).map(|a| a.status)))
 }
 
 async fn client(state: &Mutex<AppState>) -> Result<HerdrClient, String> {
