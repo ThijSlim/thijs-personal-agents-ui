@@ -57,6 +57,10 @@ describe("keyToHerdr", () => {
   ])("maps %o to %s", (e, want) => expect(keyToHerdr(e)).toBe(want));
 });
 
+const setVisibility = (v: DocumentVisibilityState) => {
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => v });
+  document.dispatchEvent(new Event("visibilitychange"));
+};
 const flush = async (ms = 0) => act(async () => void (await vi.advanceTimersByTimeAsync(ms)));
 const term = () => h.terms[h.terms.length - 1];
 
@@ -66,9 +70,12 @@ describe("TerminalView", () => {
     vi.clearAllMocks();
     h.terms.length = 0;
     vi.mocked(readScreen).mockResolvedValue({ text: "hello", ended: false });
-    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    setVisibility("visible");
   });
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    setVisibility("visible");
+  });
 
   const view = (over: Partial<Parameters<typeof TerminalView>[0]> = {}) =>
     render(<TerminalView paneId="w1:p1" label="fix bug" active {...over} />);
@@ -87,20 +94,29 @@ describe("TerminalView", () => {
     expect(readScreen).toHaveBeenCalledTimes(3);
   });
 
-  it("pauses while the window is blurred and resumes on focus", async () => {
+  it("keeps polling while the window is visible but not focused", async () => {
     view();
     await flush(0);
     expect(readScreen).toHaveBeenCalledTimes(1);
     act(() => void window.dispatchEvent(new Event("blur")));
+    await flush(500);
+    expect(readScreen).toHaveBeenCalledTimes(3);
+  });
+
+  it("pauses while the document is hidden and resumes when visible", async () => {
+    view();
+    await flush(0);
+    expect(readScreen).toHaveBeenCalledTimes(1);
+    act(() => setVisibility("hidden"));
     await flush(1000);
     expect(readScreen).toHaveBeenCalledTimes(1);
-    act(() => void window.dispatchEvent(new Event("focus")));
+    act(() => setVisibility("visible"));
     await flush(0);
     expect(readScreen).toHaveBeenCalledTimes(2);
   });
 
-  it("does not poll when the window starts unfocused", async () => {
-    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+  it("does not poll when the document starts hidden", async () => {
+    setVisibility("hidden");
     view();
     await flush(1000);
     expect(readScreen).not.toHaveBeenCalled();
@@ -219,6 +235,19 @@ describe("TerminalView", () => {
     term().data("x");
     await flush(300);
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn't send input: nope");
+  });
+
+  it("a later successful send clears the send error", async () => {
+    vi.mocked(sendInput).mockResolvedValue(undefined).mockRejectedValueOnce(new Error("nope"));
+    view();
+    await flush(0);
+    term().data("x");
+    await flush(0);
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't send input: nope");
+    term().data("y");
+    await flush(0);
+    expect(sendInput).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("is accessible", async () => {

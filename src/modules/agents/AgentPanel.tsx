@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
 import { approve, deny, markSeen, readConversation, sendReply } from "../../core/ipc";
 import { StateDot } from "../../core/StateDot";
+import { useDocumentVisible } from "../../core/useDocumentVisible";
 import type { Agent, Conversation as ConversationData, UiState } from "../../core/types";
 import { Conversation } from "./Conversation";
 import { TerminalView } from "./TerminalView";
@@ -10,16 +11,6 @@ import { TerminalView } from "./TerminalView";
 const READ_INTERVAL_MS = 500;
 /** While the agent is working (and the conversation is on screen), re-read this often. */
 export const POLL_MS = 1500;
-
-function useDocumentVisible(): boolean {
-  const [visible, setVisible] = useState(() => document.visibilityState === "visible");
-  useEffect(() => {
-    const update = () => setVisible(document.visibilityState === "visible");
-    document.addEventListener("visibilitychange", update);
-    return () => document.removeEventListener("visibilitychange", update);
-  }, []);
-  return visible;
-}
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -293,7 +284,7 @@ export function AgentPanel({ paneId, state }: Props) {
 
         <Tabs.Content value="terminal" className="tab-panel">
           <TerminalView
-            paneId={paneId} label={info?.agent.title?.trim() || paneId} active={tab === "terminal" && visible} ended={ended}
+            paneId={paneId} label={info?.agent.title?.trim() || paneId} active={tab === "terminal"} ended={ended}
             onLeave={() => terminalTab.current?.focus()}
           />
         </Tabs.Content>

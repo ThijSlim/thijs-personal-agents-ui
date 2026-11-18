@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { readScreen, sendInput } from "../../core/ipc";
+import { useDocumentVisible } from "../../core/useDocumentVisible";
 
 /** How often the screen is re-read while the terminal is on screen. */
 export const SCREEN_POLL_MS = 250;
@@ -51,26 +52,11 @@ export function keyToHerdr(e: KeyLike): string | null {
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-function useWindowFocused(): boolean {
-  const [focused, setFocused] = useState(() => document.hasFocus());
-  useEffect(() => {
-    const on = () => setFocused(true);
-    const off = () => setFocused(false);
-    window.addEventListener("focus", on);
-    window.addEventListener("blur", off);
-    return () => {
-      window.removeEventListener("focus", on);
-      window.removeEventListener("blur", off);
-    };
-  }, []);
-  return focused;
-}
-
 interface Props {
   paneId: string;
   /** Accessible name of the agent: its title or pane id. */
   label: string;
-  /** Terminal tab selected and document visible. */
+  /** The Terminal tab is selected. Polling also needs the document visible. */
   active: boolean;
   /** The session is already known to be gone. */
   ended?: boolean;
@@ -87,7 +73,7 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
   const [readEnded, setReadEnded] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
-  const focused = useWindowFocused();
+  const visible = useDocumentVisible();
   const ended = endedProp || readEnded;
   const endedRef = useRef(ended);
   endedRef.current = ended;
@@ -106,6 +92,7 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
       if (!next) return;
       running = true;
       sendInput(paneId, next)
+        .then(() => setSendError(null))
         .catch((e) => setSendError(`Couldn't send input: ${message(e)}`))
         .finally(() => {
           running = false;
@@ -151,7 +138,7 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
   }, [ended, paneId]);
 
   // Poll the screen; redraw only when it changed.
-  const polling = active && focused && !ended;
+  const polling = active && visible && !ended;
   useEffect(() => {
     if (!polling) return;
     let last: string | null = null;
