@@ -72,9 +72,16 @@ export function useUiState(): UiState {
   return state;
 }
 
+/** Lines the pane is scrolled up from the bottom, and the most it can be. */
+export interface Scroll {
+  offset: number;
+  max: number;
+}
+
 export interface Screen {
   text: string;
   ended: boolean;
+  scroll: Scroll;
 }
 
 /** The pane's visible screen, ANSI-styled. */
@@ -85,4 +92,9 @@ export function readScreen(paneId: string): Promise<Screen> {
 /** Forward typed `text` and/or herdr key-combo strings to the pane. */
 export function sendInput(paneId: string, input: { text?: string; keys?: string[] }): Promise<void> {
   return invoke("send_input", { paneId, text: input.text ?? null, keys: input.keys ?? null });
+}
+
+/** Scroll the pane to `offset` lines up from the bottom; herdr clamps it. */
+export function scrollScreen(paneId: string, offset: number): Promise<Scroll> {
+  return invoke<Scroll>("scroll_screen", { paneId, offsetFromBottom: offset });
 }

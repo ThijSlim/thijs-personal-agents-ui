@@ -1,10 +1,10 @@
 import { act, render, screen } from "@testing-library/react";
 import { axe } from "vitest-axe";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readScreen, sendInput } from "../../core/ipc";
-import { TerminalView, keyToHerdr } from "./TerminalView";
+import { readScreen, scrollScreen, sendInput } from "../../core/ipc";
+import { SCREEN_POLL_MS, TerminalView, WHEEL_PX_PER_LINE, keyToHerdr } from "./TerminalView";
 
-vi.mock("../../core/ipc", () => ({ readScreen: vi.fn(), sendInput: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../../core/ipc", () => ({ readScreen: vi.fn(), sendInput: vi.fn().mockResolvedValue(undefined), scrollScreen: vi.fn() }));
 
 const h = vi.hoisted(() => ({ terms: [] as any[] }));
 vi.mock("@xterm/xterm", () => ({
@@ -14,6 +14,8 @@ vi.mock("@xterm/xterm", () => ({
     onData = (cb: (d: string) => void) => ((this as any).data = cb, { dispose() {} });
     keyHandler?: (e: KeyboardEvent) => boolean;
     attachCustomKeyEventHandler = (f: (e: KeyboardEvent) => boolean) => void (this.keyHandler = f);
+    wheelHandler?: (e: WheelEvent) => boolean;
+    attachCustomWheelEventHandler = (f: (e: WheelEvent) => boolean) => void (this.wheelHandler = f);
     constructor(public opts: any) {
       h.terms.push(this);
     }
@@ -67,13 +69,16 @@ const setVisibility = (v: DocumentVisibilityState) => {
 };
 const flush = async (ms = 0) => act(async () => void (await vi.advanceTimersByTimeAsync(ms)));
 const term = () => h.terms[h.terms.length - 1];
+const shown = (text: string, ended = false, offset = 0, max = 100) => ({ text, ended, scroll: { offset, max } });
+const wheel = (deltaY: number, o: Partial<WheelEvent> = {}) =>
+  ({ type: "wheel", deltaY, deltaX: 0, deltaMode: 0, preventDefault: vi.fn(), ...o }) as unknown as WheelEvent;
 
 describe("TerminalView", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     h.terms.length = 0;
-    vi.mocked(readScreen).mockResolvedValue({ text: "hello", ended: false });
+    vi.mocked(readScreen).mockResolvedValue(shown("hello", false));
     setVisibility("visible");
   });
   afterEach(() => {
@@ -91,7 +96,7 @@ describe("TerminalView", () => {
     rerender(<TerminalView paneId="w1:p1" label="fix bug" active />);
     await flush(0);
     expect(readScreen).toHaveBeenCalledTimes(1); // immediately
-    await flush(500);
+    await flush(2 * SCREEN_POLL_MS);
     expect(readScreen).toHaveBeenCalledTimes(3);
     rerender(<TerminalView paneId="w1:p1" label="fix bug" active={false} />);
     await flush(1000);
@@ -103,7 +108,7 @@ describe("TerminalView", () => {
     await flush(0);
     expect(readScreen).toHaveBeenCalledTimes(1);
     act(() => void window.dispatchEvent(new Event("blur")));
-    await flush(500);
+    await flush(2 * SCREEN_POLL_MS);
     expect(readScreen).toHaveBeenCalledTimes(3);
   });
 
@@ -131,11 +136,11 @@ describe("TerminalView", () => {
     await flush(0);
     expect(term().writes).toHaveLength(1);
     expect(term().writes[0]).toBe("\x1b[0m\x1b[H\x1b[2Jhello");
-    await flush(500);
+    await flush(2 * SCREEN_POLL_MS);
     expect(readScreen).toHaveBeenCalledTimes(3);
     expect(term().writes).toHaveLength(1);
-    vi.mocked(readScreen).mockResolvedValue({ text: "a\nb", ended: false });
-    await flush(250);
+    vi.mocked(readScreen).mockResolvedValue(shown("a\nb", false));
+    await flush(SCREEN_POLL_MS);
     expect(term().writes).toHaveLength(2);
     expect(term().writes[1]).toBe("\x1b[0m\x1b[H\x1b[2Ja\r\nb");
   });
@@ -164,7 +169,7 @@ describe("TerminalView", () => {
   });
 
   it("ended disables input and says so", async () => {
-    vi.mocked(readScreen).mockResolvedValue({ text: "bye", ended: true });
+    vi.mocked(readScreen).mockResolvedValue(shown("bye", true));
     view();
     await flush(0);
     expect(screen.getByRole("status")).toHaveTextContent("Session ended");
@@ -252,6 +257,79 @@ describe("TerminalView", () => {
     await flush(0);
     expect(sendInput).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("re-reads the screen as soon as a send finishes", async () => {
+    view();
+    await flush(0);
+    expect(readScreen).toHaveBeenCalledTimes(1);
+    term().data("x");
+    await flush(0);
+    expect(readScreen).toHaveBeenCalledTimes(2);
+  });
+
+  it("wheel scrolls the pane through its history, clamped to it", async () => {
+    let at = 0;
+    vi.mocked(readScreen).mockImplementation(async () => shown("hello", false, at));
+    vi.mocked(scrollScreen).mockImplementation(async (_p, offset) => ({ offset: (at = offset), max: 100 }));
+    view();
+    await flush(0);
+    const up = wheel(-3 * WHEEL_PX_PER_LINE);
+    expect(term().wheelHandler(up)).toBe(false);
+    expect(up.preventDefault).toHaveBeenCalled();
+    await flush(0);
+    expect(scrollScreen).toHaveBeenLastCalledWith("w1:p1", 3);
+    expect(readScreen).toHaveBeenCalledTimes(2); // re-read after scrolling
+    term().wheelHandler(wheel(WHEEL_PX_PER_LINE));
+    await flush(0);
+    expect(scrollScreen).toHaveBeenLastCalledWith("w1:p1", 2);
+    term().wheelHandler(wheel(-1000, { deltaMode: 1 }));
+    await flush(0);
+    expect(scrollScreen).toHaveBeenLastCalledWith("w1:p1", 100);
+    term().wheelHandler(wheel(-1000, { deltaMode: 1 }));
+    await flush(0);
+    expect(scrollScreen).toHaveBeenCalledTimes(3); // already at the top
+  });
+
+  it("small wheel moves add up to a line", async () => {
+    vi.mocked(scrollScreen).mockImplementation(async (_p, offset) => ({ offset, max: 100 }));
+    view();
+    await flush(0);
+    term().wheelHandler(wheel(-WHEEL_PX_PER_LINE / 2));
+    await flush(0);
+    expect(scrollScreen).not.toHaveBeenCalled();
+    term().wheelHandler(wheel(-WHEEL_PX_PER_LINE / 2));
+    await flush(0);
+    expect(scrollScreen).toHaveBeenCalledWith("w1:p1", 1);
+  });
+
+  it("leaves sideways wheel to the page", async () => {
+    view();
+    await flush(0);
+    const e = wheel(1, { deltaX: 40 });
+    expect(term().wheelHandler(e)).toBe(true);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("typing while scrolled up jumps back to the bottom first", async () => {
+    vi.mocked(readScreen).mockResolvedValue(shown("old", false, 10));
+    const order: string[] = [];
+    vi.mocked(scrollScreen).mockImplementation(async (_p, offset) => (order.push(`scroll ${offset}`), { offset, max: 100 }));
+    vi.mocked(sendInput).mockImplementation(async (_p, i) => void order.push(JSON.stringify(i)));
+    view();
+    await flush(0);
+    term().data("x");
+    await flush(0);
+    expect(order).toEqual(["scroll 0", '{"text":"x"}']);
+  });
+
+  it("scrolls the pane back to the bottom when the view goes away", async () => {
+    vi.mocked(readScreen).mockResolvedValue(shown("old", false, 10));
+    vi.mocked(scrollScreen).mockResolvedValue({ offset: 0, max: 100 });
+    const { unmount } = view();
+    await flush(0);
+    unmount();
+    expect(scrollScreen).toHaveBeenCalledWith("w1:p1", 0);
   });
 
   it("is accessible", async () => {

@@ -138,6 +138,7 @@ pub fn run() {
             commands::deny,
             commands::read_screen,
             commands::send_input,
+            commands::scroll_screen,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

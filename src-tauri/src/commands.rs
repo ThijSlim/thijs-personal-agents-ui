@@ -96,21 +96,62 @@ pub async fn send_input(
     input(&client, &pane_id, text, keys).await
 }
 
+/// Scroll `pane_id` to `offset_from_bottom` lines up (herdr clamps it).
+#[tauri::command]
+pub async fn scroll_screen(
+    state: State<'_, Mutex<AppState>>,
+    pane_id: String,
+    offset_from_bottom: u64,
+) -> Result<Scroll, String> {
+    let client = client(&state).await?;
+    scroll(&client, &pane_id, offset_from_bottom).await
+}
+
 /// The pane's visible screen. `ended` when herdr no longer knows the pane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Screen {
     pub text: String,
     pub ended: bool,
+    pub scroll: Scroll,
+}
+
+/// How far the pane is scrolled up from the bottom, in lines, and how far it can go.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Scroll {
+    pub offset: u64,
+    pub max: u64,
 }
 
 /// Read `pane_id`'s visible screen with its ANSI styling (`format: ansi`,
 /// `strip_ansi: false`) so the terminal view can render colours.
 pub async fn screen(client: &HerdrClient, pane_id: &str) -> Result<Screen, String> {
     let params = json!({ "pane_id": pane_id, "source": "visible", "format": "ansi", "strip_ansi": false });
-    match read_text(client, params).await {
-        Ok(text) => Ok(Screen { text, ended: false }),
-        Err(HerdrError::Api { code, .. }) if is_not_found(&code) => Ok(Screen { text: String::new(), ended: true }),
-        Err(e) => Err(format!("couldn't read the terminal: {e}")),
+    let (text, info) = tokio::join!(read_text(client, params), client.call("pane.get", json!({ "pane_id": pane_id })));
+    let ended = Screen { text: String::new(), ended: true, scroll: Scroll::default() };
+    match (text, info.and_then(|r| scroll_of(&r))) {
+        (Ok(text), Ok(scroll)) => Ok(Screen { text, ended: false, scroll }),
+        (Err(HerdrError::Api { code, .. }), _) | (_, Err(HerdrError::Api { code, .. })) if is_not_found(&code) => {
+            Ok(ended)
+        }
+        (Err(e), _) | (_, Err(e)) => Err(format!("couldn't read the terminal: {e}")),
+    }
+}
+
+/// Scroll the pane via `pane.scroll` and return where it landed.
+pub async fn scroll(client: &HerdrClient, pane_id: &str, offset_from_bottom: u64) -> Result<Scroll, String> {
+    client
+        .call("pane.scroll", json!({ "pane_id": pane_id, "offset_from_bottom": offset_from_bottom }))
+        .await
+        .and_then(|r| scroll_of(&r))
+        .map_err(|e| format!("couldn't scroll the terminal: {e}"))
+}
+
+/// The `scroll` of a `pane_info` result.
+fn scroll_of(result: &Value) -> Result<Scroll, HerdrError> {
+    let s = &result["pane"]["scroll"];
+    match (s["offset_from_bottom"].as_u64(), s["max_offset_from_bottom"].as_u64()) {
+        (Some(offset), Some(max)) => Ok(Scroll { offset, max }),
+        _ => Err(HerdrError::Protocol("pane result has no pane.scroll".into())),
     }
 }
 

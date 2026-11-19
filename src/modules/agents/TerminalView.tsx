@@ -2,11 +2,24 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { readScreen, sendInput } from "../../core/ipc";
+import { readScreen, scrollScreen, sendInput, type Scroll } from "../../core/ipc";
 import { useDocumentVisible } from "../../core/useDocumentVisible";
 
-/** How often the screen is re-read while the terminal is on screen. */
-export const SCREEN_POLL_MS = 250;
+/**
+ * How often the screen is re-read while the terminal is on screen. herdr
+ * doesn't push output changes; a read is well under a millisecond.
+ */
+export const SCREEN_POLL_MS = 50;
+
+/** Pixels of wheel movement that scroll the pane by one line. */
+export const WHEEL_PX_PER_LINE = 16;
+
+/** Work for herdr, done one at a time in order: input, or a scroll to an offset. */
+interface Op {
+  text?: string;
+  keys?: string[];
+  scrollTo?: number;
+}
 
 interface KeyLike {
   key: string;
@@ -71,6 +84,12 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
   onLeaveRef.current = onLeave;
   const host = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal | null>(null);
+  /** Where the pane is scrolled; reads update it, the wheel moves it. */
+  const scroll = useRef<Scroll>({ offset: 0, max: 0 });
+  /** Scroll ops queued or running; reads don't overwrite the offset meanwhile. */
+  const scrolling = useRef(0);
+  /** Re-read the screen now (set while polling). */
+  const refresh = useRef(() => {});
   /** Size the terminal to the panel, but never smaller than the screen content. */
   const layout = useRef<(content?: { cols: number; rows: number }) => void>(() => {});
   const [readEnded, setReadEnded] = useState(false);
@@ -99,24 +118,47 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
     layout.current();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => layout.current());
     observer?.observe(host.current!);
-    // One send at a time, in order; consecutive queued text is merged.
-    const queue: { text?: string; keys?: string[] }[] = [];
+    // One op at a time, in order; consecutive queued text is merged, as are
+    // consecutive scrolls. The screen is re-read after each.
+    scroll.current = { offset: 0, max: 0 };
+    scrolling.current = 0;
+    const queue: Op[] = [];
     let running = false;
+    const run = (op: Op) =>
+      op.scrollTo === undefined
+        ? sendInput(paneId, op)
+            .then(() => setSendError(null))
+            .catch((e) => setSendError(`Couldn't send input: ${message(e)}`))
+        : scrollScreen(paneId, op.scrollTo)
+            .then((s) => {
+              scroll.current = s;
+              setSendError(null);
+            })
+            .catch((e) => setSendError(`Couldn't scroll: ${message(e)}`))
+            .finally(() => scrolling.current--);
     const pump = () => {
       if (running) return;
       const next = queue.shift();
       if (!next) return;
       running = true;
-      sendInput(paneId, next)
-        .then(() => setSendError(null))
-        .catch((e) => setSendError(`Couldn't send input: ${message(e)}`))
-        .finally(() => {
-          running = false;
-          pump();
-        });
+      run(next).finally(() => {
+        running = false;
+        refresh.current();
+        pump();
+      });
+    };
+    const scrollTo = (offset: number) => {
+      scroll.current = { ...scroll.current, offset };
+      const last = queue[queue.length - 1];
+      if (last?.scrollTo !== undefined) last.scrollTo = offset;
+      else {
+        scrolling.current++;
+        queue.push({ scrollTo: offset });
+      }
     };
     const send = (input: { text?: string; keys?: string[] }) => {
       if (endedRef.current) return;
+      if (scroll.current.offset > 0) scrollTo(0); // typing returns to the bottom, as in a terminal
       const last = queue[queue.length - 1];
       if (input.text !== undefined && last?.text !== undefined) last.text += input.text;
       else queue.push(input);
@@ -135,8 +177,26 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
       if (e.type === "keydown") send({ keys: [key] });
       return false;
     });
+    let wheelPx = 0;
+    t.attachCustomWheelEventHandler((e) => {
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return true; // sideways scrolls the panel
+      e.preventDefault();
+      if (endedRef.current) return false;
+      wheelPx += e.deltaMode === 0 ? e.deltaY : e.deltaY * WHEEL_PX_PER_LINE * (e.deltaMode === 2 ? t.rows : 1);
+      const lines = Math.trunc(wheelPx / WHEEL_PX_PER_LINE);
+      wheelPx -= lines * WHEEL_PX_PER_LINE;
+      const { offset, max } = scroll.current;
+      const to = Math.min(max, Math.max(0, offset - lines)); // wheel up moves away from the bottom
+      if (to !== offset) {
+        scrollTo(to);
+        pump();
+      }
+      return false;
+    });
     const data = t.onData((text) => send({ text }));
     return () => {
+      // Don't leave herdr's pane scrolled up for whoever looks at it next.
+      if (scroll.current.offset > 0 && !endedRef.current) scrollScreen(paneId, 0).catch(() => {});
       observer?.disconnect();
       layout.current = () => {};
       data.dispose();
@@ -161,15 +221,17 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
     if (!polling) return;
     let last: string | null = null;
     let inFlight = false;
+    let again = false;
     let live = true;
     const tick = () => {
-      if (inFlight) return;
+      if (inFlight) return void (again = true);
       inFlight = true;
       readScreen(paneId)
         .then((s) => {
           if (!live) return;
           setReadError(null);
           if (s.ended) setReadEnded(true);
+          scroll.current = scrolling.current ? { ...scroll.current, max: s.scroll.max } : s.scroll;
           if (s.text === last || (s.ended && !s.text)) return;
           last = s.text;
           const lines = s.text.split(/\r?\n/);
@@ -178,12 +240,20 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
           term.current?.write("\x1b[0m\x1b[H\x1b[2J" + lines.join("\r\n"));
         })
         .catch((e) => live && setReadError(`Couldn't read the terminal: ${message(e)}`))
-        .finally(() => (inFlight = false));
+        .finally(() => {
+          inFlight = false;
+          if (again && live) {
+            again = false;
+            tick();
+          }
+        });
     };
+    refresh.current = tick;
     tick();
     const id = setInterval(tick, SCREEN_POLL_MS);
     return () => {
       live = false;
+      refresh.current = () => {};
       clearInterval(id);
     };
   }, [paneId, polling]);
@@ -204,7 +274,7 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
       </p>
       <div
         ref={host}
-        className="terminal"
+        className="terminal-host"
         role="group"
         aria-label={`Terminal for ${label}`}
         aria-describedby={hintId}

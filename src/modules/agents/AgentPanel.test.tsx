@@ -12,7 +12,8 @@ vi.mock("../../core/ipc", () => ({
   sendReply: vi.fn().mockResolvedValue(undefined),
   approve: vi.fn().mockResolvedValue(undefined),
   deny: vi.fn().mockResolvedValue(undefined),
-  readScreen: vi.fn().mockResolvedValue({ text: "", ended: false }),
+  readScreen: vi.fn().mockResolvedValue({ text: "", ended: false, scroll: { offset: 0, max: 0 } }),
+  scrollScreen: vi.fn().mockResolvedValue({ offset: 0, max: 0 }),
   sendInput: vi.fn().mockResolvedValue(undefined),
 }));
 // jsdom has no canvas/matchMedia, which xterm needs.
@@ -27,6 +28,7 @@ vi.mock("@xterm/xterm", () => ({
     resize = vi.fn();
     write = vi.fn();
     attachCustomKeyEventHandler = (f: (e: unknown) => boolean) => void (xt.keyHandler = f);
+    attachCustomWheelEventHandler = vi.fn();
     onData = () => ({ dispose() {} });
     dispose = vi.fn();
   },

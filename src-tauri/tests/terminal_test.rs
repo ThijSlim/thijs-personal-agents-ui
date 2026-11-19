@@ -2,7 +2,7 @@ mod fake_herdr;
 
 use std::time::Duration;
 
-use agents_lib::commands::{Screen, input, screen};
+use agents_lib::commands::{Screen, Scroll, input, screen, scroll};
 use agents_lib::herdr::client::HerdrClient;
 use fake_herdr::FakeHerdr;
 use serde_json::{Value, json};
@@ -20,13 +20,22 @@ fn read_result(text: &str) -> Value {
         "source": "visible", "format": "ansi", "text": text, "revision": 1, "truncated": false } })
 }
 
+fn pane_info(offset: u64, max: u64) -> Value {
+    json!({ "type": "pane_info", "pane": {
+        "pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1", "revision": 1,
+        "scroll": { "offset_from_bottom": offset, "max_offset_from_bottom": max, "viewport_rows": 24 } } })
+}
+
 #[tokio::test]
-async fn screen_reads_visible_with_ansi_kept() {
+async fn screen_reads_visible_with_ansi_kept_and_its_scroll_position() {
     let (fake, path) = FakeHerdr::start();
     fake.on("pane.read", read_result("\x1b[31mred\x1b[0m"));
+    fake.on("pane.get", pane_info(5, 40));
     let c = client(&path).await;
     let s = timeout(T, screen(&c, "w1:p1")).await.unwrap().unwrap();
-    assert_eq!(s, Screen { text: "\x1b[31mred\x1b[0m".into(), ended: false });
+    assert_eq!(s, Screen { text: "\x1b[31mred\x1b[0m".into(), ended: false, scroll: Scroll { offset: 5, max: 40 } });
+    let get = fake.wait_for_request(|r| r["method"] == "pane.get").await;
+    assert_eq!(get["params"], json!({ "pane_id": "w1:p1" }));
     let req = fake.wait_for_request(|r| r["method"] == "pane.read").await;
     assert_eq!(
         req["params"],
@@ -38,12 +47,14 @@ async fn screen_reads_visible_with_ansi_kept() {
 async fn screen_not_found_is_ended_and_other_errors_surface() {
     let (fake, path) = FakeHerdr::start();
     fake.on_error("pane.read", "pane_not_found", "gone");
+    fake.on_error("pane.get", "pane_not_found", "gone");
     let c = client(&path).await;
     let s = timeout(T, screen(&c, "w1:p1")).await.unwrap().unwrap();
-    assert_eq!(s, Screen { text: String::new(), ended: true });
+    assert_eq!(s, Screen { text: String::new(), ended: true, scroll: Scroll::default() });
 
     let (fake, path) = FakeHerdr::start();
     fake.on_error("pane.read", "internal", "boom");
+    fake.on("pane.get", pane_info(0, 0));
     let c = client(&path).await;
     assert!(timeout(T, screen(&c, "w1:p1")).await.unwrap().unwrap_err().contains("boom"));
 }
@@ -66,6 +77,22 @@ async fn input_sends_text_and_keys() {
     );
 }
 
+#[tokio::test]
+async fn scroll_moves_the_pane_and_returns_where_it_landed() {
+    let (fake, path) = FakeHerdr::start();
+    fake.on("pane.scroll", pane_info(40, 40));
+    let c = client(&path).await;
+    let s = timeout(T, scroll(&c, "w1:p1", 99)).await.unwrap().unwrap();
+    assert_eq!(s, Scroll { offset: 40, max: 40 });
+    let req = fake.wait_for_request(|r| r["method"] == "pane.scroll").await;
+    assert_eq!(req["params"], json!({ "pane_id": "w1:p1", "offset_from_bottom": 99 }));
+
+    let (fake, path) = FakeHerdr::start();
+    fake.on_error("pane.scroll", "internal", "boom");
+    let c = client(&path).await;
+    assert!(timeout(T, scroll(&c, "w1:p1", 1)).await.unwrap().unwrap_err().contains("boom"));
+}
+
 /// Live check against a named dev session (never the default one):
 ///   HERDR_SESSION=agents-ui-dev herdr server &
 ///   HERDR_SOCKET_PATH=~/.config/herdr/sessions/agents-ui-dev/herdr.sock HERDR_LIVE_PANE=<pane id> \
@@ -86,6 +113,11 @@ async fn real_herdr_send_input_and_read_screen() {
         last = screen(&c, &pane).await.unwrap().text;
         if last.contains("term-42") {
             println!("{last:?}");
+            let up = scroll(&c, &pane, 1).await.unwrap();
+            let s = screen(&c, &pane).await.unwrap();
+            scroll(&c, &pane, 0).await.unwrap();
+            println!("{up:?} {:?}", s.scroll);
+            assert_eq!(s.scroll, up);
             return;
         }
     }
