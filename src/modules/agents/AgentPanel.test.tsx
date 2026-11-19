@@ -21,6 +21,9 @@ vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     options: Record<string, unknown> = {};
     open = vi.fn();
+    cols = 80;
+    rows = 24;
+    loadAddon = vi.fn();
     resize = vi.fn();
     write = vi.fn();
     attachCustomKeyEventHandler = (f: (e: unknown) => boolean) => void (xt.keyHandler = f);
@@ -29,6 +32,7 @@ vi.mock("@xterm/xterm", () => ({
   },
 }));
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { proposeDimensions = () => undefined; } }));
 
 const agent = (status: Agent["status"], seq = 1): Agent => ({
   paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", agent: "claude", title: "fix bug", status, stateChangeSeq: seq,

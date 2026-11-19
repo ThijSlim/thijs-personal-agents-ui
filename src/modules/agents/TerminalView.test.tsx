@@ -18,14 +18,18 @@ vi.mock("@xterm/xterm", () => ({
       h.terms.push(this);
     }
     options: any = {};
+    cols = 80;
+    rows = 24;
+    loadAddon = vi.fn();
     open = vi.fn();
-    resize = vi.fn();
+    resize = vi.fn((c: number, r: number) => void ((this.cols = c), (this.rows = r)));
     write = (s: string) => void this.writes.push(s);
     focus = vi.fn();
     dispose = () => void (this.disposed = true);
   },
 }));
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { proposeDimensions = () => undefined; } }));
 
 const key = (key: string, o: Partial<Record<"ctrlKey" | "altKey" | "shiftKey" | "metaKey", boolean>> = {}) =>
   ({ key, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, ...o });

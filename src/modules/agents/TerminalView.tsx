@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { readScreen, sendInput } from "../../core/ipc";
 import { useDocumentVisible } from "../../core/useDocumentVisible";
@@ -70,6 +71,8 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
   onLeaveRef.current = onLeave;
   const host = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal | null>(null);
+  /** Size the terminal to the panel, but never smaller than the screen content. */
+  const layout = useRef<(content?: { cols: number; rows: number }) => void>(() => {});
   const [readEnded, setReadEnded] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -82,7 +85,20 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
   useEffect(() => {
     const t = new Terminal({ screenReaderMode: true, scrollback: 0, cursorBlink: false, disableStdin: false });
     term.current = t;
+    const fit = new FitAddon();
+    t.loadAddon(fit);
     t.open(host.current!);
+    let content = { cols: 80, rows: 24 };
+    layout.current = (next = content) => {
+      content = next;
+      const panel = fit.proposeDimensions();
+      const cols = Math.max(content.cols, panel?.cols ?? 0);
+      const rows = Math.max(content.rows, panel?.rows ?? 0);
+      if (cols !== t.cols || rows !== t.rows) t.resize(cols, rows);
+    };
+    layout.current();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => layout.current());
+    observer?.observe(host.current!);
     // One send at a time, in order; consecutive queued text is merged.
     const queue: { text?: string; keys?: string[] }[] = [];
     let running = false;
@@ -121,6 +137,8 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
     });
     const data = t.onData((text) => send({ text }));
     return () => {
+      observer?.disconnect();
+      layout.current = () => {};
       data.dispose();
       t.dispose();
       term.current = null;
@@ -156,7 +174,7 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
           last = s.text;
           const lines = s.text.split(/\r?\n/);
           const width = Math.max(...lines.map((l) => l.replace(ANSI, "").length));
-          term.current?.resize(Math.max(80, width), Math.max(24, lines.length));
+          layout.current({ cols: Math.max(80, width), rows: Math.max(24, lines.length) });
           term.current?.write("\x1b[0m\x1b[H\x1b[2J" + lines.join("\r\n"));
         })
         .catch((e) => live && setReadError(`Couldn't read the terminal: ${message(e)}`))
