@@ -14,6 +14,14 @@ export const SCREEN_POLL_MS = 50;
 /** Pixels of wheel movement that scroll the pane by one line. */
 export const WHEEL_PX_PER_LINE = 16;
 
+/**
+ * Turn xterm's mouse reporting on/off: button-event tracking (1002) with SGR
+ * encoding (1006). While on, xterm turns wheel, clicks and drags into escape
+ * sequences on onData, which go to the pane like typed text.
+ */
+export const MOUSE_ON = "\x1b[?1002h\x1b[?1006h";
+export const MOUSE_OFF = "\x1b[?1002l\x1b[?1006l";
+
 /** Work for herdr, done one at a time in order: input, or a scroll to an offset. */
 interface Op {
   text?: string;
@@ -88,6 +96,8 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
   const scroll = useRef<Scroll>({ offset: 0, max: 0 });
   /** Scroll ops queued or running; reads don't overwrite the offset meanwhile. */
   const scrolling = useRef(0);
+  /** xterm's mouse reporting is on: the pane's app gets the mouse. */
+  const mouse = useRef(false);
   /** Re-read the screen now (set while polling). */
   const refresh = useRef(() => {});
   /** Size the terminal to the panel, but never smaller than the screen content. */
@@ -102,7 +112,13 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
 
   // The xterm instance lives as long as the pane is shown.
   useEffect(() => {
-    const t = new Terminal({ screenReaderMode: true, scrollback: 0, cursorBlink: false, disableStdin: false });
+    const t = new Terminal({
+      screenReaderMode: true,
+      scrollback: 0,
+      cursorBlink: false,
+      disableStdin: false,
+      macOptionClickForcesSelection: true, // Option+drag selects locally while the app has the mouse
+    });
     term.current = t;
     const fit = new FitAddon();
     t.loadAddon(fit);
@@ -122,6 +138,7 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
     // consecutive scrolls. The screen is re-read after each.
     scroll.current = { offset: 0, max: 0 };
     scrolling.current = 0;
+    mouse.current = false;
     const queue: Op[] = [];
     let running = false;
     const run = (op: Op) =>
@@ -179,6 +196,7 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
     });
     let wheelPx = 0;
     t.attachCustomWheelEventHandler((e) => {
+      if (mouse.current) return true; // xterm reports it to the app
       if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return true; // sideways scrolls the panel
       e.preventDefault();
       if (endedRef.current) return false;
@@ -232,6 +250,14 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
           setReadError(null);
           if (s.ended) setReadEnded(true);
           scroll.current = scrolling.current ? { ...scroll.current, max: s.scroll.max } : s.scroll;
+          // herdr can't say whether the app wants the mouse. No scrollback means
+          // a full-screen app (like Claude Code) that keeps its own history and
+          // scrolls on mouse wheel; panes with scrollback scroll via herdr.
+          const wantMouse = !s.ended && s.scroll.max === 0;
+          if (wantMouse !== mouse.current) {
+            mouse.current = wantMouse;
+            term.current?.write(wantMouse ? MOUSE_ON : MOUSE_OFF);
+          }
           if (s.text === last || (s.ended && !s.text)) return;
           last = s.text;
           const lines = s.text.split(/\r?\n/);

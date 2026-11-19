@@ -2,7 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import { axe } from "vitest-axe";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readScreen, scrollScreen, sendInput } from "../../core/ipc";
-import { SCREEN_POLL_MS, TerminalView, WHEEL_PX_PER_LINE, keyToHerdr } from "./TerminalView";
+import { MOUSE_OFF, MOUSE_ON, SCREEN_POLL_MS, TerminalView, WHEEL_PX_PER_LINE, keyToHerdr } from "./TerminalView";
 
 vi.mock("../../core/ipc", () => ({ readScreen: vi.fn(), sendInput: vi.fn().mockResolvedValue(undefined), scrollScreen: vi.fn() }));
 
@@ -266,6 +266,30 @@ describe("TerminalView", () => {
     term().data("x");
     await flush(0);
     expect(readScreen).toHaveBeenCalledTimes(2);
+  });
+
+  it("hands the mouse to the app while herdr has no scrollback for the pane", async () => {
+    vi.mocked(readScreen).mockResolvedValue(shown("full-screen app", false, 0, 0));
+    vi.mocked(scrollScreen).mockResolvedValue({ offset: 3, max: 50 });
+    view();
+    await flush(0);
+    expect(term().writes).toContain(MOUSE_ON);
+    expect(term().wheelHandler(wheel(-48))).toBe(true); // xterm reports it to the app
+    await flush(0);
+    expect(scrollScreen).not.toHaveBeenCalled();
+    term().data("\x1b[<64;5;5M");
+    await flush(0);
+    expect(sendInput).toHaveBeenCalledWith("w1:p1", { text: "\x1b[<64;5;5M" });
+
+    vi.mocked(readScreen).mockResolvedValue(shown("shell", false, 0, 50));
+    await flush(SCREEN_POLL_MS);
+    expect(term().writes.filter((w: string) => w === MOUSE_OFF)).toHaveLength(1);
+    expect(term().wheelHandler(wheel(-48))).toBe(false);
+  });
+
+  it("Option+drag still selects locally", () => {
+    view();
+    expect(term().opts.macOptionClickForcesSelection).toBe(true);
   });
 
   it("wheel scrolls the pane through its history, clamped to it", async () => {
