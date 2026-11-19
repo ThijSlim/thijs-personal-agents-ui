@@ -1,10 +1,15 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { axe } from "vitest-axe";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readScreen, scrollScreen, sendInput } from "../../core/ipc";
+import { readScreen, scrollScreen, sendInput, sendText } from "../../core/ipc";
 import { MOUSE_OFF, MOUSE_ON, SCREEN_POLL_MS, TerminalView, WHEEL_PX_PER_LINE, keyToHerdr } from "./TerminalView";
 
-vi.mock("../../core/ipc", () => ({ readScreen: vi.fn(), sendInput: vi.fn().mockResolvedValue(undefined), scrollScreen: vi.fn() }));
+vi.mock("../../core/ipc", () => ({
+  readScreen: vi.fn(),
+  sendInput: vi.fn().mockResolvedValue(undefined),
+  sendText: vi.fn().mockResolvedValue(undefined),
+  scrollScreen: vi.fn(),
+}));
 
 const h = vi.hoisted(() => ({ terms: [] as any[] }));
 vi.mock("@xterm/xterm", () => ({
@@ -154,7 +159,7 @@ describe("TerminalView", () => {
     expect(readScreen).toHaveBeenCalledTimes(1);
   });
 
-  it("forwards special keys as keys and printable text as text", async () => {
+  it("forwards special keys as keys and typed text raw", async () => {
     view();
     const t = term();
     const ev = (k: string, o = {}) => ({ ...key(k, o), preventDefault: vi.fn(), type: "keydown" }) as any;
@@ -164,8 +169,8 @@ describe("TerminalView", () => {
     expect(t.keyHandler(ev("a"))).toBe(true);
     t.data("ab");
     await flush(0);
-    expect(sendInput).toHaveBeenCalledWith("w1:p1", { text: "ab" });
-    expect(sendInput).toHaveBeenCalledTimes(2);
+    expect(sendText).toHaveBeenCalledWith("w1:p1", "ab");
+    expect(sendInput).toHaveBeenCalledTimes(1);
   });
 
   it("ended disables input and says so", async () => {
@@ -179,6 +184,7 @@ describe("TerminalView", () => {
     t.data("x");
     t.keyHandler({ ...key("Enter"), type: "keydown", preventDefault: vi.fn() });
     expect(sendInput).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
     await flush(1000);
     expect(readScreen).toHaveBeenCalledTimes(1);
   });
@@ -217,13 +223,15 @@ describe("TerminalView", () => {
     let release!: () => void;
     const order: string[] = [];
     let inFlight = 0;
-    vi.mocked(sendInput).mockImplementation(async (_p, i) => {
+    const record = async (sent: object) => {
       inFlight++;
       expect(inFlight).toBe(1);
-      order.push(JSON.stringify(i));
+      order.push(JSON.stringify(sent));
       if (order.length === 1) await new Promise<void>((r) => (release = r));
       inFlight--;
-    });
+    };
+    vi.mocked(sendInput).mockImplementation((_p, i) => record(i));
+    vi.mocked(sendText).mockImplementation((_p, text) => record({ text }));
     view();
     const t = term();
     t.data("l");
@@ -238,7 +246,7 @@ describe("TerminalView", () => {
   });
 
   it("keeps a send error when a later read succeeds", async () => {
-    vi.mocked(sendInput).mockRejectedValue(new Error("nope"));
+    vi.mocked(sendText).mockRejectedValue(new Error("nope"));
     view();
     await flush(0);
     term().data("x");
@@ -247,7 +255,7 @@ describe("TerminalView", () => {
   });
 
   it("a later successful send clears the send error", async () => {
-    vi.mocked(sendInput).mockResolvedValue(undefined).mockRejectedValueOnce(new Error("nope"));
+    vi.mocked(sendText).mockResolvedValue(undefined).mockRejectedValueOnce(new Error("nope"));
     view();
     await flush(0);
     term().data("x");
@@ -255,7 +263,7 @@ describe("TerminalView", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn't send input: nope");
     term().data("y");
     await flush(0);
-    expect(sendInput).toHaveBeenCalledTimes(2);
+    expect(sendText).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
@@ -279,12 +287,38 @@ describe("TerminalView", () => {
     expect(scrollScreen).not.toHaveBeenCalled();
     term().data("\x1b[<64;5;5M");
     await flush(0);
-    expect(sendInput).toHaveBeenCalledWith("w1:p1", { text: "\x1b[<64;5;5M" });
+    expect(sendText).toHaveBeenCalledWith("w1:p1", "\x1b[<64;5;5M");
 
     vi.mocked(readScreen).mockResolvedValue(shown("shell", false, 0, 50));
     await flush(SCREEN_POLL_MS);
     expect(term().writes.filter((w: string) => w === MOUSE_OFF)).toHaveLength(1);
     expect(term().wheelHandler(wheel(-48))).toBe(false);
+  });
+
+  it("sends a paste as a paste and typing as raw text", async () => {
+    view();
+    fireEvent.paste(screen.getByRole("group"));
+    term().data("pasted text");
+    term().data("t");
+    await flush(0);
+    expect(sendInput).toHaveBeenCalledWith("w1:p1", { text: "pasted text" });
+    expect(sendText).toHaveBeenCalledWith("w1:p1", "t");
+    expect(sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it("never merges mouse reports into one burst", async () => {
+    let release!: () => void;
+    vi.mocked(sendText).mockImplementationOnce(() => new Promise<void>((r) => (release = r)));
+    view();
+    const t = term();
+    t.data("a");
+    t.data("\x1b[<64;5;5M");
+    t.data("\x1b[<64;5;5M");
+    t.data("b");
+    await flush(0);
+    release();
+    await flush(0);
+    expect(vi.mocked(sendText).mock.calls.map(([, text]) => text)).toEqual(["a", "\x1b[<64;5;5M", "\x1b[<64;5;5M", "b"]);
   });
 
   it("Option+drag still selects locally", () => {
@@ -339,12 +373,12 @@ describe("TerminalView", () => {
     vi.mocked(readScreen).mockResolvedValue(shown("old", false, 10));
     const order: string[] = [];
     vi.mocked(scrollScreen).mockImplementation(async (_p, offset) => (order.push(`scroll ${offset}`), { offset, max: 100 }));
-    vi.mocked(sendInput).mockImplementation(async (_p, i) => void order.push(JSON.stringify(i)));
+    vi.mocked(sendText).mockImplementation(async (_p, text) => void order.push(text));
     view();
     await flush(0);
     term().data("x");
     await flush(0);
-    expect(order).toEqual(["scroll 0", '{"text":"x"}']);
+    expect(order).toEqual(["scroll 0", "x"]);
   });
 
   it("scrolls the pane back to the bottom when the view goes away", async () => {

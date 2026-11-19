@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { readScreen, scrollScreen, sendInput, type Scroll } from "../../core/ipc";
+import { readScreen, scrollScreen, sendInput, sendText, type Scroll } from "../../core/ipc";
 import { useDocumentVisible } from "../../core/useDocumentVisible";
 
 /**
@@ -22,9 +22,13 @@ export const WHEEL_PX_PER_LINE = 16;
 export const MOUSE_ON = "\x1b[?1002h\x1b[?1006h";
 export const MOUSE_OFF = "\x1b[?1002l\x1b[?1006l";
 
-/** Work for herdr, done one at a time in order: input, or a scroll to an offset. */
+/**
+ * Work for herdr, done one at a time in order: typed text (raw, so it never
+ * looks like a paste), a paste, keys, or a scroll to an offset.
+ */
 interface Op {
   text?: string;
+  paste?: string;
   keys?: string[];
   scrollTo?: number;
 }
@@ -141,18 +145,24 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
     mouse.current = false;
     const queue: Op[] = [];
     let running = false;
-    const run = (op: Op) =>
-      op.scrollTo === undefined
-        ? sendInput(paneId, op)
-            .then(() => setSendError(null))
-            .catch((e) => setSendError(`Couldn't send input: ${message(e)}`))
-        : scrollScreen(paneId, op.scrollTo)
-            .then((s) => {
-              scroll.current = s;
-              setSendError(null);
-            })
-            .catch((e) => setSendError(`Couldn't scroll: ${message(e)}`))
-            .finally(() => scrolling.current--);
+    const run = (op: Op) => {
+      if (op.scrollTo !== undefined) {
+        return scrollScreen(paneId, op.scrollTo)
+          .then((s) => {
+            scroll.current = s;
+            setSendError(null);
+          })
+          .catch((e) => setSendError(`Couldn't scroll: ${message(e)}`))
+          .finally(() => scrolling.current--);
+      }
+      const sent =
+        op.text !== undefined
+          ? sendText(paneId, op.text)
+          : sendInput(paneId, op.paste !== undefined ? { text: op.paste } : { keys: op.keys });
+      return sent
+        .then(() => setSendError(null))
+        .catch((e) => setSendError(`Couldn't send input: ${message(e)}`));
+    };
     const pump = () => {
       if (running) return;
       const next = queue.shift();
@@ -173,14 +183,25 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
         queue.push({ scrollTo: offset });
       }
     };
-    const send = (input: { text?: string; keys?: string[] }) => {
+    const send = (input: Op) => {
       if (endedRef.current) return;
-      if (scroll.current.offset > 0) scrollTo(0); // typing returns to the bottom, as in a terminal
+      // Typing returns to the bottom, as in a terminal; mouse reports don't.
+      if (scroll.current.offset > 0 && !input.text?.startsWith("\x1b[<")) scrollTo(0);
       const last = queue[queue.length - 1];
-      if (input.text !== undefined && last?.text !== undefined) last.text += input.text;
+      // Merge typed text, but send escape sequences (mouse reports) on their own.
+      const plain = (t?: string) => t !== undefined && !t.includes("\x1b");
+      if (plain(input.text) && plain(last?.text)) last!.text += input.text!;
       else queue.push(input);
       pump();
     };
+    // xterm delivers a paste through onData like typing; the paste event comes first.
+    let pasting = false;
+    const onPaste = () => {
+      pasting = true;
+      setTimeout(() => (pasting = false)); // in case xterm sends nothing for it
+    };
+    const el = host.current!;
+    el.addEventListener("paste", onPaste, true);
     t.attachCustomKeyEventHandler((e) => {
       if (e.isComposing || e.keyCode === 229) return true;
       if (e.metaKey && e.key === "Escape") {
@@ -211,10 +232,14 @@ export function TerminalView({ paneId, label, active, ended: endedProp = false, 
       }
       return false;
     });
-    const data = t.onData((text) => send({ text }));
+    const data = t.onData((text) => {
+      send(pasting ? { paste: text } : { text });
+      pasting = false;
+    });
     return () => {
       // Don't leave herdr's pane scrolled up for whoever looks at it next.
       if (scroll.current.offset > 0 && !endedRef.current) scrollScreen(paneId, 0).catch(() => {});
+      el.removeEventListener("paste", onPaste, true);
       observer?.disconnect();
       layout.current = () => {};
       data.dispose();

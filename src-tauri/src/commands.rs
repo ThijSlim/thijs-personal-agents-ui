@@ -84,7 +84,8 @@ pub async fn read_screen(state: State<'_, Mutex<AppState>>, pane_id: String) -> 
     screen(&client, &pane_id).await
 }
 
-/// Forward typed `text` and/or herdr key-combo strings `keys` to the pane.
+/// Forward pasted `text` (herdr marks it as a paste if the app wants that) and/or
+/// herdr key-combo strings `keys` to the pane.
 #[tauri::command]
 pub async fn send_input(
     state: State<'_, Mutex<AppState>>,
@@ -94,6 +95,13 @@ pub async fn send_input(
 ) -> Result<(), String> {
     let client = client(&state).await?;
     input(&client, &pane_id, text, keys).await
+}
+
+/// Write `text` to the pane as typed, byte-for-byte (keystrokes, mouse reports).
+#[tauri::command]
+pub async fn send_text(state: State<'_, Mutex<AppState>>, pane_id: String, text: String) -> Result<(), String> {
+    let client = client(&state).await?;
+    type_text(&client, &pane_id, &text).await
 }
 
 /// Scroll `pane_id` to `offset_from_bottom` lines up (herdr clamps it).
@@ -135,6 +143,17 @@ pub async fn screen(client: &HerdrClient, pane_id: &str) -> Result<Screen, Strin
         }
         (Err(e), _) | (_, Err(e)) => Err(format!("couldn't read the terminal: {e}")),
     }
+}
+
+/// Write `text` via `pane.send_text`, which, unlike `pane.send_input`, never
+/// wraps it in bracketed-paste markers. Claude Code treats a paste as input
+/// and jumps to the bottom, so mouse reports and typing must not look like one.
+pub async fn type_text(client: &HerdrClient, pane_id: &str, text: &str) -> Result<(), String> {
+    client
+        .call("pane.send_text", json!({ "pane_id": pane_id, "text": text }))
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("couldn't send input: {e}"))
 }
 
 /// Scroll the pane via `pane.scroll` and return where it landed.

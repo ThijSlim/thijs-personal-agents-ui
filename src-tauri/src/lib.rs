@@ -138,6 +138,7 @@ pub fn run() {
             commands::deny,
             commands::read_screen,
             commands::send_input,
+            commands::send_text,
             commands::scroll_screen,
         ])
         .build(tauri::generate_context!())

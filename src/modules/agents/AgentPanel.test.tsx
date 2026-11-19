@@ -15,6 +15,7 @@ vi.mock("../../core/ipc", () => ({
   readScreen: vi.fn().mockResolvedValue({ text: "", ended: false, scroll: { offset: 0, max: 0 } }),
   scrollScreen: vi.fn().mockResolvedValue({ offset: 0, max: 0 }),
   sendInput: vi.fn().mockResolvedValue(undefined),
+  sendText: vi.fn().mockResolvedValue(undefined),
 }));
 // jsdom has no canvas/matchMedia, which xterm needs.
 const xt = vi.hoisted(() => ({ keyHandler: undefined as undefined | ((e: unknown) => boolean) }));

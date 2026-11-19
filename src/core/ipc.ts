@@ -89,7 +89,10 @@ export function readScreen(paneId: string): Promise<Screen> {
   return invoke<Screen>("read_screen", { paneId });
 }
 
-/** Forward typed `text` and/or herdr key-combo strings to the pane. */
+/**
+ * Forward pasted `text` and/or herdr key-combo strings to the pane. herdr
+ * marks the text as a paste when the app asks for bracketed paste.
+ */
 export function sendInput(paneId: string, input: { text?: string; keys?: string[] }): Promise<void> {
   return invoke("send_input", { paneId, text: input.text ?? null, keys: input.keys ?? null });
 }
@@ -97,4 +100,9 @@ export function sendInput(paneId: string, input: { text?: string; keys?: string[
 /** Scroll the pane to `offset` lines up from the bottom; herdr clamps it. */
 export function scrollScreen(paneId: string, offset: number): Promise<Scroll> {
   return invoke<Scroll>("scroll_screen", { paneId, offsetFromBottom: offset });
+}
+
+/** Write `text` to the pane byte-for-byte, as typed: keystrokes and mouse reports. */
+export function sendText(paneId: string, text: string): Promise<void> {
+  return invoke("send_text", { paneId, text });
 }

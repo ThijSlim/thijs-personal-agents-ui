@@ -2,7 +2,7 @@ mod fake_herdr;
 
 use std::time::Duration;
 
-use agents_lib::commands::{Screen, Scroll, input, screen, scroll};
+use agents_lib::commands::{Screen, Scroll, input, screen, scroll, type_text};
 use agents_lib::herdr::client::HerdrClient;
 use fake_herdr::FakeHerdr;
 use serde_json::{Value, json};
@@ -75,6 +75,21 @@ async fn input_sends_text_and_keys() {
             json!({ "pane_id": "w1:p1", "keys": ["ctrl+c", "enter"] }),
         ]
     );
+}
+
+#[tokio::test]
+async fn type_text_sends_raw_bytes_without_paste_wrapping() {
+    let (fake, path) = FakeHerdr::start();
+    fake.on("pane.send_text", json!({ "type": "ok" }));
+    let c = client(&path).await;
+    timeout(T, type_text(&c, "w1:p1", "\x1b[<64;5;5M")).await.unwrap().unwrap();
+    let req = fake.wait_for_request(|r| r["method"] == "pane.send_text").await;
+    assert_eq!(req["params"], json!({ "pane_id": "w1:p1", "text": "\x1b[<64;5;5M" }));
+
+    let (fake, path) = FakeHerdr::start();
+    fake.on_error("pane.send_text", "internal", "boom");
+    let c = client(&path).await;
+    assert!(timeout(T, type_text(&c, "w1:p1", "x")).await.unwrap().unwrap_err().contains("boom"));
 }
 
 #[tokio::test]
